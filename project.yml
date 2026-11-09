@@ -24,11 +24,6 @@ targets:
       - path: Shared
     dependencies:
       - target: BroadcastExtension
-    entitlements:
-      path: App/PrivateSubtitles.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.kissgoodbye.privatesubtitles
     info:
       path: App/Info.plist
       properties:
@@ -57,11 +52,6 @@ targets:
     sources:
       - path: Broadcast
       - path: Shared
-    entitlements:
-      path: Broadcast/Broadcast.entitlements
-      properties:
-        com.apple.security.application-groups:
-          - group.com.kissgoodbye.privatesubtitles
     info:
       path: Broadcast/Info.plist
       properties:

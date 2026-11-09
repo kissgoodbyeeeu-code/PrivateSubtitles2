@@ -4,10 +4,9 @@ import Darwin
 /// 主 App 端的 socket 服务：接收广播扩展发来的系统声音，转成 AVAudioPCMBuffer。
 final class SystemAudioReceiver {
     enum ReceiverError: LocalizedError {
-        case noAppGroup, socketFailed(String)
+        case socketFailed(String)
         var errorDescription: String? {
             switch self {
-            case .noAppGroup: return "找不到 App Group 容器（签名时没有带上 App Group 权限）"
             case .socketFailed(let why): return "本地通信启动失败：\(why)"
             }
         }
@@ -21,7 +20,6 @@ final class SystemAudioReceiver {
     private var running = false
     private var listenFD: Int32 = -1
     private var clientFD: Int32 = -1
-    private var path: String?
     private var formats: [UInt32: AVAudioFormat] = [:]
 
     private var isRunning: Bool {
@@ -31,22 +29,22 @@ final class SystemAudioReceiver {
 
     func start() throws {
         guard !isRunning else { return }
-        guard let path = AudioWire.socketPath() else { throw ReceiverError.noAppGroup }
-        guard var addr = AudioWire.makeAddress(path: path) else {
-            throw ReceiverError.socketFailed("路径过长")
-        }
-        unlink(path)
 
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { throw ReceiverError.socketFailed("socket() errno \(errno)") }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = AudioWire.loopbackAddress()
         let bound = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard bound == 0 else {
+            let err = errno
             Darwin.close(fd)
-            throw ReceiverError.socketFailed("bind() errno \(errno)")
+            throw ReceiverError.socketFailed("端口 \(AudioWire.port) 绑定失败 errno \(err)")
         }
         guard Darwin.listen(fd, 1) == 0 else {
             Darwin.close(fd)
@@ -55,7 +53,6 @@ final class SystemAudioReceiver {
 
         lock.lock()
         listenFD = fd
-        self.path = path
         running = true
         lock.unlock()
 
@@ -69,7 +66,7 @@ final class SystemAudioReceiver {
     func stop() {
         lock.lock()
         running = false
-        let l = listenFD, c = clientFD, p = path
+        let l = listenFD, c = clientFD
         listenFD = -1
         clientFD = -1
         lock.unlock()
@@ -79,7 +76,6 @@ final class SystemAudioReceiver {
             Darwin.shutdown(l, SHUT_RDWR)
             Darwin.close(l)
         }
-        if let p { unlink(p) }
     }
 
     // MARK: - 线程
@@ -91,7 +87,7 @@ final class SystemAudioReceiver {
                 if errno == EINTR { continue }
                 break
             }
-            AudioWire.disableSigPipe(c)
+            AudioWire.configure(c)
             lock.lock(); clientFD = c; lock.unlock()
             log("广播已连接")
             onConnectionChange?(true)
@@ -106,6 +102,13 @@ final class SystemAudioReceiver {
     }
 
     private func readLoop(fd: Int32) {
+        var magic = [UInt8](repeating: 0, count: AudioWire.magic.count)
+        let gotMagic = magic.withUnsafeMutableBytes { readExactly(fd, $0.baseAddress!, $0.count) }
+        guard gotMagic, magic == AudioWire.magic else {
+            logError("未知连接，已拒绝")
+            return
+        }
+
         var header = [UInt8](repeating: 0, count: AudioWire.headerSize)
         var samples: [Float] = []
 

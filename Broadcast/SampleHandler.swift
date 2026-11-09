@@ -64,21 +64,18 @@ final class AudioSender {
 
     func connect() -> Bool {
         close()
-        guard let path = AudioWire.socketPath(), var addr = AudioWire.makeAddress(path: path) else {
-            logger.error("找不到 App Group 容器")
-            return false
-        }
-        let s = socket(AF_UNIX, SOCK_STREAM, 0)
+        let s = socket(AF_INET, SOCK_STREAM, 0)
         guard s >= 0 else { return false }
-        AudioWire.disableSigPipe(s)
+        AudioWire.configure(s)
 
         // 发送超时 200ms，主 App 卡住时不要拖住扩展
         var timeout = timeval(tv_sec: 0, tv_usec: 200_000)
         setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
+        var addr = AudioWire.loopbackAddress()
         let result = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(s, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                Darwin.connect(s, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard result == 0 else {
@@ -86,6 +83,8 @@ final class AudioSender {
             return false
         }
         fd = s
+        // 先发暗号，主 App 据此确认是自己的扩展
+        guard sendRaw(AudioWire.magic) else { return false }
         return true
     }
 
@@ -97,7 +96,12 @@ final class AudioSender {
         withUnsafeBytes(of: frames.littleEndian) { packet.append(contentsOf: $0) }
         samples.withUnsafeBytes { packet.append(contentsOf: $0) } // iOS 是小端
 
-        let ok = packet.withUnsafeBytes { raw -> Bool in
+        return sendRaw(packet)
+    }
+
+    private func sendRaw(_ bytes: [UInt8]) -> Bool {
+        guard fd >= 0 else { return false }
+        let ok = bytes.withUnsafeBytes { raw -> Bool in
             var offset = 0
             while offset < raw.count {
                 let n = Darwin.send(fd, raw.baseAddress! + offset, raw.count - offset, 0)
