@@ -14,6 +14,9 @@ struct PrivateSubtitlesApp: App {
                     pipeline.onSubtitleChange = { [pip] english, chinese, isVolatile in
                         pip.update(english: english, chinese: chinese, isVolatile: isVolatile)
                     }
+                    pipeline.onStatusChange = { [pip] level, warning in
+                        pip.updateStatus(level: level, warning: warning)
+                    }
                 }
         }
     }

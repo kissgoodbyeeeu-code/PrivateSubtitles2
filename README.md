@@ -25,6 +25,7 @@
 - [x] **P2** 画中画（PiP）悬浮字幕窗：切到后台自动弹出，也可手动开关
 - [x] **P3** ReplayKit 广播扩展：抓 Safari 等其他 App 的声音（音源选「系统声音」）
 - [x] 翻译引擎可选：Claude / DeepSeek / 通义千问 / 豆包；App 图标（`tools/make_icon.py` 生成）
+- [x] 声音电平指示、没声音 / 没识别到语音时提醒（App 内 + 悬浮窗）、被打断后自动恢复
 - [ ] **P4** 字幕样式、导出 SRT、费用统计、TestFlight 自动上传
 
 ## 怎么拿到 IPA

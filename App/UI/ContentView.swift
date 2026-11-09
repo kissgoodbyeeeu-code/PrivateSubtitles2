@@ -18,6 +18,7 @@ struct ContentView: View {
                 .padding(.top, 8)
                 .disabled(pipeline.isRunning || pipeline.isStarting)
                 statusBar
+                warningBanner
                 PiPLayerView(controller: pip)
                     .aspectRatio(pip.aspectRatio, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -53,9 +54,26 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer()
+            if pipeline.isRunning {
+                LevelMeter(level: pipeline.audioLevel)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var warningBanner: some View {
+        if let message = pipeline.health.message {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+                .transition(.opacity)
+        }
     }
 
     private var pipHint: some View {
@@ -63,9 +81,9 @@ struct ContentView: View {
             if !pip.isSupported {
                 Text("此设备不支持画中画")
             } else if pip.isActive {
-                Text("悬浮字幕已打开，可以切到 Safari 看视频了")
+                Text("悬浮字幕已打开，可以切到其他 App 看视频了")
             } else if pipeline.activeSource == .system && !pipeline.broadcastConnected {
-                Text("点 ⦿ →「开始直播」，然后切到 Safari 播放视频")
+                Text("点 ⦿ →「开始直播」，然后切到任意 App 播放视频")
             } else if pipeline.isRunning {
                 Text("切到后台会自动弹出悬浮字幕，也可点下方按钮手动打开")
             } else {
@@ -147,3 +165,23 @@ struct ContentView: View {
     }
 }
 
+
+/// 输入音量电平条：有声音时绿色跳动
+struct LevelMeter: View {
+    let level: Float
+    private let bars = 8
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<bars, id: \.self) { i in
+                let lit = Float(i) < level * Float(bars)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(lit ? Color.green : Color.secondary.opacity(0.3))
+                    .frame(width: 3, height: 6 + CGFloat(i) * 1.5)
+            }
+        }
+        .frame(height: 18, alignment: .bottom)
+        .animation(.linear(duration: 0.1), value: level)
+        .accessibilityLabel("输入音量")
+    }
+}

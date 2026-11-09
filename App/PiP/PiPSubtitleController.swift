@@ -68,7 +68,19 @@ final class PiPSubtitleController: NSObject {
     }
 
     func update(english: String, chinese: String, isVolatile: Bool) {
-        let new = SubtitleFrameRenderer.Content(english: english, chinese: chinese, isVolatile: isVolatile)
+        var new = content
+        new.english = english
+        new.chinese = chinese
+        new.isVolatile = isVolatile
+        guard new != content else { return }
+        content = new
+        enqueueFrame()
+    }
+
+    func updateStatus(level: Float, warning: String?) {
+        var new = content
+        new.level = level
+        new.warning = warning
         guard new != content else { return }
         content = new
         enqueueFrame()

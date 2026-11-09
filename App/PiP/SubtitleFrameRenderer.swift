@@ -8,6 +8,10 @@ final class SubtitleFrameRenderer {
         var chinese: String = ""
         /// 英文还在识别中（未定稿）
         var isVolatile: Bool = false
+        /// 输入音量 0...1
+        var level: Float = 0
+        /// 没声音等提醒（显示在英文那一行的位置）
+        var warning: String?
     }
 
     /// 3:1 的横条，适合当字幕悬浮窗
@@ -59,18 +63,25 @@ final class SubtitleFrameRenderer {
         let enSize = 38 * scale
         let zhSize = 54 * scale
 
-        if content.english.isEmpty && content.chinese.isEmpty {
+        drawLevelMeter(content.level, in: ctx)
+
+        if content.english.isEmpty && content.chinese.isEmpty && content.warning == nil {
             draw("等待语音…", font: .systemFont(ofSize: enSize), color: .gray,
-                 in: CGRect(x: pad, y: size.height / 2 - enSize, width: width, height: enSize * 2))
+                 in: CGRect(x: pad, y: size.height / 2 - enSize, width: width - 40, height: enSize * 2))
             return buffer
         }
 
-        // 英文：最多 2 行，长句只保留结尾
-        let enRect = CGRect(x: pad, y: 28, width: width, height: enSize * 2.6)
-        draw(Self.tail(content.english, max: Int(110 / scale)),
-             font: .systemFont(ofSize: enSize),
-             color: UIColor.white.withAlphaComponent(content.isVolatile ? 0.55 : 0.85),
-             in: enRect)
+        // 英文：最多 2 行，长句只保留结尾；有提醒时这一行改成橙色提醒
+        let enRect = CGRect(x: pad, y: 28, width: width - 40, height: enSize * 2.6)
+        if let warning = content.warning {
+            draw(warning, font: .systemFont(ofSize: enSize * 0.9, weight: .semibold),
+                 color: UIColor(red: 1, green: 0.6, blue: 0.2, alpha: 1), in: enRect)
+        } else {
+            draw(Self.tail(content.english, max: Int(110 / scale)),
+                 font: .systemFont(ofSize: enSize),
+                 color: UIColor.white.withAlphaComponent(content.isVolatile ? 0.55 : 0.85),
+                 in: enRect)
+        }
 
         // 中文：最多 2 行，黄色加粗
         let zhTop = enRect.maxY + 12
@@ -81,6 +92,20 @@ final class SubtitleFrameRenderer {
              in: zhRect)
 
         return buffer
+    }
+
+    /// 右上角竖向电平条（5 格），有声音时亮绿
+    private func drawLevelMeter(_ level: Float, in ctx: CGContext) {
+        let bars = 5
+        let barW: CGFloat = 14, barH: CGFloat = 10, gap: CGFloat = 5
+        let x = size.width - 36 - barW
+        let lit = Int((level * Float(bars)).rounded(.up))
+        for i in 0..<bars {
+            let y = 36 + CGFloat(bars - 1 - i) * (barH + gap)
+            let on = i < lit
+            (on ? UIColor(red: 0.3, green: 0.9, blue: 0.4, alpha: 1) : UIColor(white: 0.3, alpha: 1)).setFill()
+            ctx.fill(CGRect(x: x, y: y, width: barW, height: barH))
+        }
     }
 
     private func draw(_ text: String, font: UIFont, color: UIColor, in rect: CGRect) {
