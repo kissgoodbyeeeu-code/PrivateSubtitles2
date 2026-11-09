@@ -21,6 +21,14 @@ targets:
     platform: iOS
     sources:
       - path: App
+      - path: Shared
+    dependencies:
+      - target: BroadcastExtension
+    entitlements:
+      path: App/PrivateSubtitles.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.kissgoodbye.privatesubtitles
     info:
       path: App/Info.plist
       properties:
@@ -41,3 +49,28 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: ""
     scheme: {}
+
+  # 广播上传扩展：抓 Safari 等其他 App 正在播放的声音
+  BroadcastExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Broadcast
+      - path: Shared
+    entitlements:
+      path: Broadcast/Broadcast.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.kissgoodbye.privatesubtitles
+    info:
+      path: Broadcast/Info.plist
+      properties:
+        CFBundleDisplayName: 双语字幕
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kissgoodbye.privatesubtitles.broadcast
+        TARGETED_DEVICE_FAMILY: "1"

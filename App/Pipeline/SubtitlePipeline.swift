@@ -21,7 +21,12 @@ final class SubtitlePipeline {
     private(set) var isStarting = false
     private(set) var status = "未开始"
 
+    private(set) var activeSource: AudioSource?
+    private(set) var broadcastConnected = false
+
     private let mic = MicrophoneCapture()
+    private let receiver = SystemAudioReceiver()
+    private let silentPlayer = SilentAudioPlayer()
     private var transcriber: LiveTranscriber?
     private let maxLines = 300
     private let contextSize = 3
@@ -53,9 +58,12 @@ final class SubtitlePipeline {
         isStarting = true
         defer { isStarting = false }
 
-        guard await MicrophoneCapture.requestPermission() else {
-            status = "没有麦克风权限，请到系统设置里打开"
-            return
+        let source = AudioSource.current
+        if source == .microphone {
+            guard await MicrophoneCapture.requestPermission() else {
+                status = "没有麦克风权限，请到系统设置里打开"
+                return
+            }
         }
         guard await LiveTranscriber.requestPermission() else {
             status = "没有语音识别权限，请到系统设置里打开"
@@ -68,15 +76,35 @@ final class SubtitlePipeline {
             try await transcriber.start(locale: Locale(identifier: "en-US")) { [weak self] update in
                 Task { @MainActor in self?.handle(update) }
             }
-            try mic.start { buffer in
-                transcriber.append(buffer)
+            switch source {
+            case .microphone:
+                try mic.start { buffer in
+                    transcriber.append(buffer)
+                }
+                status = "正在听（麦克风）…"
+            case .system:
+                try silentPlayer.start()
+                receiver.onBuffer = { buffer in
+                    transcriber.append(buffer)
+                }
+                receiver.onConnectionChange = { [weak self] connected in
+                    Task { @MainActor in
+                        guard let self, self.isRunning else { return }
+                        self.broadcastConnected = connected
+                        self.status = connected ? "正在听（系统声音）…" : "等待广播：点下方 ⦿ 按钮开始广播"
+                    }
+                }
+                try receiver.start()
+                status = "等待广播：点下方 ⦿ 按钮开始广播"
             }
             self.transcriber = transcriber
+            activeSource = source
             isRunning = true
-            status = "正在听…"
-            log("管线已启动")
+            log("管线已启动，音源: \(source.title)")
         } catch {
             mic.stop()
+            receiver.stop()
+            silentPlayer.stop()
             await transcriber.stop()
             status = "启动失败：\(error.localizedDescription)"
             logError("启动失败: \(error)")
@@ -86,6 +114,10 @@ final class SubtitlePipeline {
     func stop() async {
         guard isRunning else { return }
         mic.stop()
+        receiver.stop()
+        silentPlayer.stop()
+        broadcastConnected = false
+        activeSource = nil
         await transcriber?.stop()
         transcriber = nil
         isRunning = false

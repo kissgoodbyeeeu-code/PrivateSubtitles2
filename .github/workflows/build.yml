@@ -49,6 +49,11 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/PrivateSubtitles.app Payload/
+          # 用临时签名（ad-hoc）把 App Group 权限写进二进制，侧载工具重签时才能保留
+          APP=Payload/PrivateSubtitles.app
+          codesign -f -s - --entitlements Broadcast/Broadcast.entitlements "$APP/PlugIns/BroadcastExtension.appex"
+          codesign -f -s - --entitlements App/PrivateSubtitles.entitlements "$APP"
+          codesign -d --entitlements - "$APP/PlugIns/BroadcastExtension.appex"
           zip -qry PrivateSubtitles-unsigned.ipa Payload
 
       - name: Upload IPA

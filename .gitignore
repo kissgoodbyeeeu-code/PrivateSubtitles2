@@ -13,3 +13,5 @@ Payload/
 *.ipa
 
 .DS_Store
+Broadcast/Info.plist
+*.entitlements

@@ -3,12 +3,20 @@ import SwiftUI
 struct ContentView: View {
     @Environment(SubtitlePipeline.self) private var pipeline
     @Environment(PiPSubtitleController.self) private var pip
+    @AppStorage(AudioSource.storageKey) private var source: AudioSource = .system
     @State private var showSettings = false
     @State private var showLog = false
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
+                Picker("音源", selection: $source) {
+                    ForEach(AudioSource.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .disabled(pipeline.isRunning || pipeline.isStarting)
                 statusBar
                 PiPLayerView(controller: pip)
                     .aspectRatio(pip.aspectRatio, contentMode: .fit)
@@ -56,6 +64,8 @@ struct ContentView: View {
                 Text("此设备不支持画中画")
             } else if pip.isActive {
                 Text("悬浮字幕已打开，可以切到 Safari 看视频了")
+            } else if pipeline.activeSource == .system && !pipeline.broadcastConnected {
+                Text("点 ⦿ →「开始直播」，然后切到 Safari 播放视频")
             } else if pipeline.isRunning {
                 Text("切到后台会自动弹出悬浮字幕，也可点下方按钮手动打开")
             } else {
@@ -110,6 +120,17 @@ struct ContentView: View {
                     .frame(width: 44, height: 44)
             }
             .disabled(!pip.isPossible && !pip.isActive)
+
+            if pipeline.activeSource == .system {
+                BroadcastPickerButton()
+                    .frame(width: 44, height: 44)
+                    .overlay(alignment: .topTrailing) {
+                        Circle()
+                            .fill(pipeline.broadcastConnected ? Color.green : Color.orange)
+                            .frame(width: 8, height: 8)
+                            .allowsHitTesting(false)
+                    }
+            }
 
             Button {
                 Task { await pipeline.toggle() }
