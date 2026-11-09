@@ -2,77 +2,36 @@ import Foundation
 
 /// 用 Claude Messages API（原始 HTTP + SSE 流式）把英文字幕译成中文。
 /// Swift 没有官方 SDK，所以直接调 REST 接口。
-struct ClaudeTranslator {
-    struct ContextPair {
-        let english: String
-        let chinese: String
-    }
-
-    enum TranslatorError: LocalizedError {
-        case http(Int, String)
-        case api(String)
-        var errorDescription: String? {
-            switch self {
-            case .http(let code, let body): return "HTTP \(code): \(body.prefix(300))"
-            case .api(let msg): return "API 错误: \(msg)"
-            }
-        }
-    }
-
+struct ClaudeTranslator: SubtitleTranslator {
     let apiKey: String
     let model: String
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
 
-    private static let systemPrompt = """
-    你是专业的视频同声传译。把用户给出的一句英文字幕翻译成自然、简洁的简体中文字幕。
-    规则：
-    - 只输出译文本身，不要解释、注释、引号或原文。
-    - 口语化、符合中文表达习惯，长度尽量接近原句。
-    - 人名、品牌、专有名词用常见中文译法；没有通用译法的保留英文。
-    - 语音识别可能有错字，结合上下文推断原意。
-    """
-
-    /// 返回中文增量片段的流。
-    func translate(_ text: String, context: [ContextPair]) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    try await run(text: text, context: context, continuation: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
+    func translate(_ text: String, context: [TranslationContext]) -> AsyncThrowingStream<String, Error> {
+        makeTranslationStream { continuation in
+            try await run(text: text, context: context, continuation: continuation)
         }
     }
 
     private func run(text: String,
-                     context: [ContextPair],
+                     context: [TranslationContext],
                      continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
-        var userContent = ""
-        if !context.isEmpty {
-            userContent += "前文（仅供理解语境，不要翻译）：\n"
-            for pair in context {
-                userContent += "EN: \(pair.english)\nZH: \(pair.chinese)\n"
-            }
-            userContent += "\n"
-        }
-        userContent += "需要翻译的句子：\n\(text)"
-
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": 1024,
             "stream": true,
-            // 字幕翻译要低延迟：关闭思考、低 effort
-            "thinking": ["type": "disabled"],
+            // 字幕翻译要低延迟：低 effort
             "output_config": ["effort": "low"],
-            "system": Self.systemPrompt,
+            "system": TranslationPrompt.system,
             "messages": [
-                ["role": "user", "content": userContent],
+                ["role": "user", "content": TranslationPrompt.userContent(text: text, context: context)],
             ],
         ]
+        // Haiku 可以完全关闭思考；Sonnet 5.5 / Opus 5.5 不允许 disabled（会 400），只靠低 effort
+        if model.contains("haiku") {
+            body["thinking"] = ["type": "disabled"]
+        }
 
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"
@@ -99,6 +58,7 @@ struct ClaudeTranslator {
 
             switch type {
             case "content_block_delta":
+                // 只取正文；思考块（thinking_delta）忽略
                 if let delta = event["delta"] as? [String: Any],
                    delta["type"] as? String == "text_delta",
                    let piece = delta["text"] as? String {

@@ -51,8 +51,9 @@ final class SubtitlePipeline {
 
     func start() async {
         guard !isRunning, !isStarting else { return }
-        guard let key = Keychain.get(SettingsKeys.anthropicKey), !key.isEmpty else {
-            status = "请先在设置里填写 Anthropic API Key"
+        let engine = TranslationEngine.current
+        guard engine.apiKey != nil else {
+            status = "请先在设置里填写 \(engine.title) 的 API Key"
             return
         }
         isStarting = true
@@ -161,12 +162,20 @@ final class SubtitlePipeline {
         let context = lines[..<index]
             .filter { !$0.chinese.isEmpty && $0.error == nil }
             .suffix(contextSize)
-            .map { ClaudeTranslator.ContextPair(english: $0.english, chinese: $0.chinese) }
+            .map { TranslationContext(english: $0.english, chinese: $0.chinese) }
 
-        let apiKey = Keychain.get(SettingsKeys.anthropicKey) ?? ""
-        let model = UserDefaults.standard.string(forKey: SettingsKeys.model)
-            .flatMap { $0.isEmpty ? nil : $0 } ?? SettingsKeys.defaultModel
-        let translator = ClaudeTranslator(apiKey: apiKey, model: model)
+        let engine = TranslationEngine.current
+        let translator: SubtitleTranslator
+        do {
+            translator = try engine.makeTranslator()
+        } catch {
+            update(lineID) {
+                $0.isTranslating = false
+                $0.error = error.localizedDescription
+            }
+            return
+        }
+        let engineName = "\(engine.title)/\(engine.model)"
         let started = Date()
 
         Task {
@@ -175,13 +184,13 @@ final class SubtitlePipeline {
                     update(lineID) { $0.chinese += piece }
                 }
                 update(lineID) { $0.isTranslating = false }
-                log(String(format: "翻译完成 %.2fs: %@", Date().timeIntervalSince(started), english))
+                log(String(format: "[%@] 翻译完成 %.2fs: %@", engineName, Date().timeIntervalSince(started), english))
             } catch {
                 update(lineID) {
                     $0.isTranslating = false
                     $0.error = error.localizedDescription
                 }
-                logError("翻译失败: \(error.localizedDescription)")
+                logError("[\(engineName)] 翻译失败: \(error.localizedDescription)")
             }
         }
     }
