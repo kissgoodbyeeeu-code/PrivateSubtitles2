@@ -1,0 +1,15 @@
+# XcodeGen 生成物
+*.xcodeproj
+App/Info.plist
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# 打包产物
+Payload/
+*.ipa
+
+.DS_Store

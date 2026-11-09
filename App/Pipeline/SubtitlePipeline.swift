@@ -1,0 +1,147 @@
+import AVFoundation
+import Foundation
+import Observation
+
+/// 串起整条链路：音频 → 端侧识别 → 断句 → Claude 翻译 → 字幕状态。
+@MainActor
+@Observable
+final class SubtitlePipeline {
+    struct Line: Identifiable, Equatable {
+        let id = UUID()
+        var english: String
+        var chinese: String = ""
+        var isTranslating = false
+        var error: String?
+    }
+
+    private(set) var lines: [Line] = []
+    /// 正在说、还没定稿的英文（灰色显示）
+    private(set) var volatileText = ""
+    private(set) var isRunning = false
+    private(set) var isStarting = false
+    private(set) var status = "未开始"
+
+    private let mic = MicrophoneCapture()
+    private var transcriber: LiveTranscriber?
+    private let maxLines = 300
+    private let contextSize = 3
+
+    var latestLine: Line? { lines.last }
+
+    func toggle() async {
+        if isRunning { await stop() } else { await start() }
+    }
+
+    func start() async {
+        guard !isRunning, !isStarting else { return }
+        guard let key = Keychain.get(SettingsKeys.anthropicKey), !key.isEmpty else {
+            status = "请先在设置里填写 Anthropic API Key"
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
+
+        guard await MicrophoneCapture.requestPermission() else {
+            status = "没有麦克风权限，请到系统设置里打开"
+            return
+        }
+        guard await LiveTranscriber.requestPermission() else {
+            status = "没有语音识别权限，请到系统设置里打开"
+            return
+        }
+
+        let transcriber = LiveTranscriber()
+        do {
+            status = "准备语音模型…"
+            try await transcriber.start(locale: Locale(identifier: "en-US")) { [weak self] update in
+                Task { @MainActor in self?.handle(update) }
+            }
+            try mic.start { buffer in
+                transcriber.append(buffer)
+            }
+            self.transcriber = transcriber
+            isRunning = true
+            status = "正在听…"
+            log("管线已启动")
+        } catch {
+            mic.stop()
+            await transcriber.stop()
+            status = "启动失败：\(error.localizedDescription)"
+            logError("启动失败: \(error)")
+        }
+    }
+
+    func stop() async {
+        guard isRunning else { return }
+        mic.stop()
+        await transcriber?.stop()
+        transcriber = nil
+        isRunning = false
+        volatileText = ""
+        status = "已停止"
+        log("管线已停止")
+    }
+
+    func clear() {
+        lines.removeAll()
+        volatileText = ""
+    }
+
+    // MARK: - 识别结果处理
+
+    private func handle(_ update: LiveTranscriber.Update) {
+        let text = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if update.isFinal {
+            volatileText = ""
+            guard !text.isEmpty else { return }
+            appendLine(text)
+        } else {
+            volatileText = text
+        }
+    }
+
+    private func appendLine(_ english: String) {
+        let line = Line(english: english, isTranslating: true)
+        lines.append(line)
+        if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
+        translate(lineID: line.id)
+    }
+
+    // MARK: - 翻译
+
+    private func translate(lineID: UUID) {
+        guard let index = lines.firstIndex(where: { $0.id == lineID }) else { return }
+        let english = lines[index].english
+        let context = lines[..<index]
+            .filter { !$0.chinese.isEmpty && $0.error == nil }
+            .suffix(contextSize)
+            .map { ClaudeTranslator.ContextPair(english: $0.english, chinese: $0.chinese) }
+
+        let apiKey = Keychain.get(SettingsKeys.anthropicKey) ?? ""
+        let model = UserDefaults.standard.string(forKey: SettingsKeys.model)
+            .flatMap { $0.isEmpty ? nil : $0 } ?? SettingsKeys.defaultModel
+        let translator = ClaudeTranslator(apiKey: apiKey, model: model)
+        let started = Date()
+
+        Task {
+            do {
+                for try await piece in translator.translate(english, context: Array(context)) {
+                    update(lineID) { $0.chinese += piece }
+                }
+                update(lineID) { $0.isTranslating = false }
+                log(String(format: "翻译完成 %.2fs: %@", Date().timeIntervalSince(started), english))
+            } catch {
+                update(lineID) {
+                    $0.isTranslating = false
+                    $0.error = error.localizedDescription
+                }
+                logError("翻译失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func update(_ id: UUID, _ change: (inout Line) -> Void) {
+        guard let i = lines.firstIndex(where: { $0.id == id }) else { return }
+        change(&lines[i])
+    }
+}
