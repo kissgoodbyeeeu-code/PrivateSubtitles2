@@ -28,6 +28,18 @@ final class SubtitlePipeline {
 
     var latestLine: Line? { lines.last }
 
+    /// 字幕变化时回调（英文, 中文, 英文是否未定稿），给画中画用
+    @ObservationIgnored var onSubtitleChange: ((String, String, Bool) -> Void)?
+
+    private func notifySubtitleChange() {
+        if !volatileText.isEmpty {
+            // 正在说新的一句：显示新英文，中文先保留上一句的译文
+            onSubtitleChange?(volatileText, latestLine?.chinese ?? "", true)
+        } else {
+            onSubtitleChange?(latestLine?.english ?? "", latestLine?.chinese ?? "", false)
+        }
+    }
+
     func toggle() async {
         if isRunning { await stop() } else { await start() }
     }
@@ -85,6 +97,7 @@ final class SubtitlePipeline {
     func clear() {
         lines.removeAll()
         volatileText = ""
+        notifySubtitleChange()
     }
 
     // MARK: - 识别结果处理
@@ -98,6 +111,7 @@ final class SubtitlePipeline {
         } else {
             volatileText = text
         }
+        notifySubtitleChange()
     }
 
     private func appendLine(_ english: String) {
@@ -143,5 +157,6 @@ final class SubtitlePipeline {
     private func update(_ id: UUID, _ change: (inout Line) -> Void) {
         guard let i = lines.firstIndex(where: { $0.id == id }) else { return }
         change(&lines[i])
+        if lines[i].id == latestLine?.id { notifySubtitleChange() }
     }
 }

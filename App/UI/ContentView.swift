@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(SubtitlePipeline.self) private var pipeline
-    @AppStorage(SettingsKeys.fontSize) private var fontSize: Double = 22
+    @Environment(PiPSubtitleController.self) private var pip
     @State private var showSettings = false
     @State private var showLog = false
 
@@ -10,11 +10,12 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 statusBar
-                CurrentSubtitleView(line: pipeline.latestLine,
-                                    volatileText: pipeline.volatileText,
-                                    fontSize: fontSize)
+                PiPLayerView(controller: pip)
+                    .aspectRatio(pip.aspectRatio, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 8)
+                pipHint
                 Divider()
                 historyList
                 controlBar
@@ -47,6 +48,24 @@ struct ContentView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+    }
+
+    private var pipHint: some View {
+        Group {
+            if !pip.isSupported {
+                Text("此设备不支持画中画")
+            } else if pip.isActive {
+                Text("悬浮字幕已打开，可以切到 Safari 看视频了")
+            } else if pipeline.isRunning {
+                Text("切到后台会自动弹出悬浮字幕，也可点下方按钮手动打开")
+            } else {
+                Text("开始同传后可打开悬浮字幕")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
     private var historyList: some View {
@@ -85,6 +104,14 @@ struct ContentView: View {
             .disabled(pipeline.lines.isEmpty)
 
             Button {
+                pip.toggle()
+            } label: {
+                Image(systemName: pip.isActive ? "pip.exit" : "pip.enter")
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(!pip.isPossible && !pip.isActive)
+
+            Button {
                 Task { await pipeline.toggle() }
             } label: {
                 Label(pipeline.isRunning ? "停止" : (pipeline.isStarting ? "启动中…" : "开始同传"),
@@ -99,30 +126,3 @@ struct ContentView: View {
     }
 }
 
-/// 当前字幕：上英下中。P2 会把同样的排版画进画中画悬浮窗。
-struct CurrentSubtitleView: View {
-    let line: SubtitlePipeline.Line?
-    let volatileText: String
-    let fontSize: Double
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !volatileText.isEmpty {
-                Text(volatileText)
-                    .font(.system(size: fontSize * 0.75))
-                    .foregroundStyle(.white.opacity(0.6))
-            } else if let line {
-                Text(line.english)
-                    .font(.system(size: fontSize * 0.75))
-                    .foregroundStyle(.white.opacity(0.85))
-            }
-            Text(line?.chinese.isEmpty == false ? line!.chinese : " ")
-                .font(.system(size: fontSize, weight: .semibold))
-                .foregroundStyle(.yellow)
-        }
-        .frame(maxWidth: .infinity, minHeight: 120, alignment: .leading)
-        .padding(16)
-        .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 14))
-        .animation(.easeOut(duration: 0.15), value: line?.chinese)
-    }
-}
