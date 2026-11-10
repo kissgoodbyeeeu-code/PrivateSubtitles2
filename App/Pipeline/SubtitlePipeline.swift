@@ -78,6 +78,7 @@ final class SubtitlePipeline {
         }
         isStarting = true
         defer { isStarting = false }
+        engine.warmUp()
 
         let source = AudioSource.current
         if source == .microphone {
@@ -188,6 +189,8 @@ final class SubtitlePipeline {
         isAutoDetect = false
         isRunning = false
         volatileText = ""
+        committedText = ""
+        lastVolatileAt = nil
         status = "已停止"
         log("管线已停止")
     }
@@ -219,6 +222,7 @@ final class SubtitlePipeline {
     private func checkHealth() {
         guard isRunning, let source = activeSource else { return }
         let now = Date()
+        commitOnPause(now: now)
         let snap = levelMonitor.snapshot()
 
         // 超过 0.5 秒没新数据，电平归零
@@ -282,13 +286,90 @@ final class SubtitlePipeline {
         guard update.language == currentLanguage else { return }
         if !text.isEmpty { lastSpeechAt = Date() }
         if update.isFinal {
+            // 识别器定稿：只翻译还没提前送出去的那部分
+            let rest = Self.remainder(of: text, after: committedText)
+            // 定稿可能只覆盖了提前提交内容的前一部分，剩下的留着给下一次定稿抵扣
+            committedText = Self.remainder(of: committedText, after: text)
             volatileText = ""
-            guard !text.isEmpty else { return }
-            appendLine(text, language: update.language)
+            lastVolatileAt = nil
+            if !rest.isEmpty { appendLine(rest, language: update.language) }
         } else {
-            volatileText = text
+            lastVolatileAt = Date()
+            var rest = Self.remainder(of: text, after: committedText)
+            // 句子已经说完（出现句号、问号等，后面又开始了新内容）：不等定稿，先送去翻译
+            if let cut = Self.sentenceBoundary(in: rest) {
+                commitEarly(String(rest[..<cut]), language: update.language)
+                rest = Self.remainder(of: text, after: committedText)
+            }
+            volatileText = rest
         }
         notifySubtitleChange()
+    }
+
+    // MARK: - 提前断句（降低延迟）
+
+    /// 本段语音里已经提前送去翻译的文字
+    @ObservationIgnored private var committedText = ""
+    @ObservationIgnored private var lastVolatileAt: Date?
+    /// 说话停顿多久就不等识别器定稿，直接翻译
+    private let pauseCommitAfter: TimeInterval = 0.8
+
+    private func commitEarly(_ text: String, language: SourceLanguage) {
+        let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Self.contentCount(sentence) > 0 else { return }
+        committedText = committedText.isEmpty ? sentence : committedText + " " + sentence
+        appendLine(sentence, language: language)
+    }
+
+    /// 由 0.2 秒的定时器调用：停顿超过阈值就把正在说的内容提前翻译
+    private func commitOnPause(now: Date) {
+        guard !volatileText.isEmpty, let language = currentLanguage,
+              let last = lastVolatileAt, now.timeIntervalSince(last) >= pauseCommitAfter else { return }
+        commitEarly(volatileText, language: language)
+        volatileText = ""
+        lastVolatileAt = nil
+        notifySubtitleChange()
+    }
+
+    /// 字母和数字的个数（忽略空格、标点，比较识别结果时更稳）
+    private static func contentCount<S: StringProtocol>(_ s: S) -> Int {
+        s.reduce(0) { $0 + (($1.isLetter || $1.isNumber) ? 1 : 0) }
+    }
+
+    /// 去掉 text 开头已经提交过的部分（按字母数字个数对齐，识别器小改几个词也不会重复）
+    private static func remainder(of text: String, after committed: String) -> String {
+        let n = contentCount(committed)
+        var idx = text.startIndex
+        var seen = 0
+        while idx < text.endIndex && seen < n {
+            if text[idx].isLetter || text[idx].isNumber { seen += 1 }
+            idx = text.index(after: idx)
+        }
+        var rest = text[idx...]
+        while let c = rest.first, c.isWhitespace || c.isPunctuation { rest = rest.dropFirst() }
+        return String(rest)
+    }
+
+    /// 最后一个「句末标点 + 后面已有新内容」的位置（返回标点之后的位置）
+    private static func sentenceBoundary(in text: String) -> String.Index? {
+        let enders: Set<Character> = [".", "?", "!", "。", "？", "！"]
+        var result: String.Index?
+        var idx = text.startIndex
+        while idx < text.endIndex {
+            let next = text.index(after: idx)
+            if enders.contains(text[idx]), next < text.endIndex {
+                let after = text[next]
+                // 英文等要求标点后有空格（避免 3.5、U.S. 被拆开）；中日文不需要
+                let isCJKEnd = "。？！".contains(text[idx])
+                if (isCJKEnd || after.isWhitespace),
+                   contentCount(text[next...]) > 0,
+                   contentCount(text[..<idx]) >= 2 {
+                    result = next
+                }
+            }
+            idx = next
+        }
+        return result
     }
 
     /// 切换语言：撤掉旧语言刚才识别出的几句（多半是乱码），补上新语言最近的几句
@@ -299,6 +380,8 @@ final class SubtitlePipeline {
         currentLanguage = new
         SourceLanguage.lastDetected = new
         volatileText = ""
+        committedText = ""
+        lastVolatileAt = nil
         lastSpeechAt = now
         for text in detector.recentTexts(for: new, within: recentWindow) {
             appendLine(text, language: new)
@@ -340,11 +423,15 @@ final class SubtitlePipeline {
 
         Task {
             do {
+                var firstPieceAt: Date?
                 for try await piece in translator.translate(original, language: language, context: Array(context)) {
+                    if firstPieceAt == nil { firstPieceAt = Date() }
                     update(lineID) { $0.chinese += piece }
                 }
                 update(lineID) { $0.isTranslating = false }
-                log(String(format: "[%@] 翻译完成 %.2fs: %@", engineName, Date().timeIntervalSince(started), original))
+                log(String(format: "[%@] 翻译完成：首字 %.2fs，全部 %.2fs: %@", engineName,
+                           (firstPieceAt ?? Date()).timeIntervalSince(started),
+                           Date().timeIntervalSince(started), original))
             } catch {
                 update(lineID) {
                     $0.isTranslating = false

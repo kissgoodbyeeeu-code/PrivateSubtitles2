@@ -9,6 +9,7 @@ struct SettingsView: View {
     /// 每个引擎各自的 Key 和模型，切换引擎时不会互相覆盖
     @State private var keys: [TranslationEngine: String] = [:]
     @State private var models: [TranslationEngine: String] = [:]
+    @State private var international: [TranslationEngine: Bool] = [:]
 
     var body: some View {
         NavigationStack {
@@ -39,6 +40,14 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                     TextField(engine.defaultModel, text: binding(for: engine, in: $models))
                         .textInputAutocapitalization(.never)
+                    if engine.hasInternationalRegion {
+                        Toggle("海外节点", isOn: Binding(
+                            get: { international[engine] ?? engine.isInternational },
+                            set: { value in
+                                international[engine] = value
+                                UserDefaults.standard.set(value, forKey: engine.regionDefaultsKey)
+                            }))
+                    }
                         .autocorrectionDisabled()
                 } header: {
                     Text("\(engine.title) 的 API Key 和模型")

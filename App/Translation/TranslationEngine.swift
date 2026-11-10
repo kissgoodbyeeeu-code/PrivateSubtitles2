@@ -47,8 +47,49 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
         case .claude: return "claude-haiku-5-5"
         case .deepseek: return "deepseek-chat"
         case .qwen: return "qwen-plus"
-        case .doubao: return "doubao-seed-1-6-flash-250615"
+        case .doubao: return isInternational ? "seed-1-6-flash-250615" : "doubao-seed-1-6-flash-250615"
         }
+    }
+
+    /// 通义千问、豆包有海外节点（国际站账号，Key 和国内不通用）
+    var hasInternationalRegion: Bool { self == .qwen || self == .doubao }
+
+    var regionDefaultsKey: String { "international.\(rawValue)" }
+
+    var isInternational: Bool {
+        hasInternationalRegion && UserDefaults.standard.bool(forKey: regionDefaultsKey)
+    }
+
+    var endpoint: URL {
+        switch self {
+        case .claude:
+            return URL(string: "https://api.anthropic.com/v1/messages")!
+        case .deepseek:
+            return URL(string: "https://api.deepseek.com/chat/completions")!
+        case .qwen:
+            return isInternational
+                ? URL(string: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions")!
+                : URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")!
+        case .doubao:
+            return isInternational
+                ? URL(string: "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions")!
+                : URL(string: "https://ark.cn-beijing.volces.com/api/v3/chat/completions")!
+        }
+    }
+
+    /// 开始同传时先连一下服务器，把 DNS / TLS 握手提前做掉，第一句翻译更快
+    func warmUp() {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 10
+        let started = Date()
+        URLSession.shared.dataTask(with: request) { _, _, error in
+            if let error {
+                log("预连接 \(title) 失败: \(error.localizedDescription)", level: "WARN")
+            } else {
+                log(String(format: "预连接 %@ 完成 %.2fs", title, Date().timeIntervalSince(started)))
+            }
+        }.resume()
     }
 
     var keyPlaceholder: String {
@@ -63,17 +104,17 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
         switch self {
         case .claude: return "console.anthropic.com/settings/keys"
         case .deepseek: return "platform.deepseek.com/api_keys"
-        case .qwen: return "bailian.console.aliyun.com（API-KEY 管理）"
-        case .doubao: return "console.volcengine.com/ark（API Key 管理）"
+        case .qwen: return isInternational ? "bailian.console.alibabacloud.com（国际站）" : "bailian.console.aliyun.com（API-KEY 管理）"
+        case .doubao: return isInternational ? "console.byteplus.com/ark（BytePlus 国际站）" : "console.volcengine.com/ark（API Key 管理）"
         }
     }
 
     var note: String {
         switch self {
-        case .claude: return "国内需要代理。Haiku 最快最便宜；也可填 claude-sonnet-5-5 / claude-opus-5-5。"
-        case .deepseek: return "国内直连，翻译质量好。"
-        case .qwen: return "国内直连（阿里云百炼）。也可填 qwen-flash、qwen-max 等。"
-        case .doubao: return "国内直连（火山方舟）。模型名以控制台「模型广场」里显示的 ID 为准，需要先开通该模型。"
+        case .claude: return "在海外（欧洲、美国）直连最快；国内需要代理。Haiku 最快最便宜；也可填 claude-sonnet-5-5 / claude-opus-5-5。"
+        case .deepseek: return "服务器在国内，在海外用会慢一些。翻译质量好。"
+        case .qwen: return "在海外请打开「海外节点」（新加坡，需国际站 Key）。也可填 qwen-flash、qwen-max 等。"
+        case .doubao: return "在海外请打开「海外节点」（BytePlus 东南亚，需国际站 Key）。模型名以控制台显示的 ID 为准，需要先开通。"
         }
     }
 
@@ -106,18 +147,14 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
         case .claude:
             return ClaudeTranslator(apiKey: key, model: model)
         case .deepseek:
-            return OpenAICompatibleTranslator(
-                endpoint: URL(string: "https://api.deepseek.com/chat/completions")!,
-                apiKey: key, model: model, extraBody: [:])
+            return OpenAICompatibleTranslator(endpoint: endpoint, apiKey: key, model: model, extraBody: [:])
         case .qwen:
             return OpenAICompatibleTranslator(
-                endpoint: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")!,
-                apiKey: key, model: model,
+                endpoint: endpoint, apiKey: key, model: model,
                 extraBody: ["enable_thinking": false]) // 关闭思考，降低延迟
         case .doubao:
             return OpenAICompatibleTranslator(
-                endpoint: URL(string: "https://ark.cn-beijing.volces.com/api/v3/chat/completions")!,
-                apiKey: key, model: model,
+                endpoint: endpoint, apiKey: key, model: model,
                 extraBody: ["thinking": ["type": "disabled"]]) // 关闭深度思考，降低延迟
         }
     }
