@@ -20,13 +20,13 @@ final class SubtitlePipeline {
         var displayChinese: String { chinese.isEmpty ? draft : chinese }
     }
 
-    /// 字幕当前要显示的内容：当前一句 + 上一句
+    /// 字幕当前要显示的内容：当前一句 + 前两句（共三行译文）
     struct Snapshot: Equatable {
         var original = ""
         var chinese = ""
         var isVolatile = false
-        var previousOriginal = ""
-        var previousChinese = ""
+        /// 前两句的译文，旧的在前
+        var previousChinese: [String] = []
     }
 
     private(set) var lines: [Line] = []
@@ -74,27 +74,26 @@ final class SubtitlePipeline {
 
     private func notifySubtitleChange() {
         var snap = Snapshot()
-        let previous: Line?
+        let previous: [Line]
         if !volatileText.isEmpty {
             // 正在说新的一句：当前显示正在说的原文 + 草稿译文，上一句留着
             snap.original = volatileText
             snap.chinese = draftChinese
             snap.isVolatile = true
-            previous = latestLine
+            previous = Array(lines.suffix(2))
         } else if let latest = latestLine {
             snap.original = latest.original
             snap.chinese = latest.displayChinese
-            previous = lines.dropLast().last
+            previous = Array(lines.dropLast().suffix(2))
         } else {
-            previous = nil
+            previous = []
         }
-        snap.previousOriginal = previous?.original ?? ""
-        snap.previousChinese = previous?.displayChinese ?? ""
+        snap.previousChinese = previous.map(\.displayChinese).filter { !$0.isEmpty }
         onSubtitleChange?(snap)
         if activeSource == .safari {
             safariServer.send(["type": "sub",
                                "original": snap.original, "chinese": snap.chinese, "volatile": snap.isVolatile,
-                               "prevOriginal": snap.previousOriginal, "prevChinese": snap.previousChinese])
+                               "prevChinese": snap.previousChinese])
         }
     }
 

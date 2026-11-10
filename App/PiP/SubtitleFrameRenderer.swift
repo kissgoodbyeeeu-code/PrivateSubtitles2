@@ -12,8 +12,8 @@ final class SubtitleFrameRenderer {
         var level: Float = 0
         /// 没声音等提醒（显示在英文那一行的位置）
         var warning: String?
-        /// 上一句译文（淡色显示在最上面，字幕停留更久）
-        var previousChinese: String = ""
+        /// 前两句译文（淡色显示在上面，字幕停留更久），旧的在前
+        var previousChinese: [String] = []
     }
 
     /// 3:1 的横条，适合当字幕悬浮窗
@@ -74,16 +74,18 @@ final class SubtitleFrameRenderer {
             return buffer
         }
 
-        // 上一句译文：1 行，淡黄色
-        var top: CGFloat = 22
-        let prevSize = zhSize * 0.62
-        if !content.previousChinese.isEmpty {
-            draw(Self.tail(content.previousChinese, max: Int(width / prevSize) - 1),
+        // 前两句译文：各 1 行，淡黄色，越旧越淡
+        var top: CGFloat = 16
+        let prevSize = zhSize * 0.58
+        let prev = Array(content.previousChinese.suffix(2))
+        let padded = Array(repeating: "", count: 2 - prev.count) + prev
+        for (i, text) in padded.enumerated() where !text.isEmpty {
+            draw(Self.tail(text, max: Int((width - 40) / prevSize) - 1),
                  font: .systemFont(ofSize: prevSize, weight: .medium),
-                 color: UIColor(red: 1, green: 0.85, blue: 0.2, alpha: 0.45),
-                 in: CGRect(x: pad, y: top, width: width - 40, height: prevSize * 1.35))
+                 color: UIColor(red: 1, green: 0.85, blue: 0.2, alpha: i == 0 ? 0.3 : 0.5),
+                 in: CGRect(x: pad, y: top + CGFloat(i) * prevSize * 1.3, width: width - 40, height: prevSize * 1.3))
         }
-        top += prevSize * 1.45
+        top += prevSize * 2.7
 
         // 原文：最多 2 行，长句只保留结尾；有提醒时这一行改成橙色提醒
         let enRect = CGRect(x: pad, y: top, width: width - 40, height: enSize * 2.5)

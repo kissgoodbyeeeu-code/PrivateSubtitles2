@@ -18,7 +18,7 @@
   const prevEl = sub.querySelector(".ps-prev");
   const origEl = sub.querySelector(".ps-orig");
   const zhEl = sub.querySelector(".ps-zh");
-  let subtitle = { original: "", chinese: "", volatile: false, prevChinese: "" };
+  let subtitle = { original: "", chinese: "", volatile: false, prevChinese: [] };
   let warning = null;
 
   function render() {
@@ -30,8 +30,8 @@
       origEl.className = "ps-orig" + (subtitle.volatile ? " ps-volatile" : "");
     }
     zhEl.textContent = tail(subtitle.chinese, 60);
-    prevEl.textContent = tail(subtitle.prevChinese, 40);
-    prevEl.style.display = subtitle.prevChinese ? "block" : "none";
+    prevEl.textContent = subtitle.prevChinese.slice(-2).map((t) => tail(t, 40)).join("\n");
+    prevEl.style.display = subtitle.prevChinese.length ? "block" : "none";
     const empty = !origEl.textContent && !zhEl.textContent && !prevEl.textContent;
     sub.querySelector(".ps-box").style.display = empty ? "none" : "inline-block";
   }
@@ -78,7 +78,7 @@
         updateWarning();
       } else if (msg.type === "sub") {
         subtitle = { original: msg.original || "", chinese: msg.chinese || "", volatile: !!msg.volatile,
-                     prevChinese: msg.prevChinese || "" };
+                     prevChinese: Array.isArray(msg.prevChinese) ? msg.prevChinese : [] };
         render();
       } else if (msg.type === "status") {
         active.appWarning = msg.warning || null;
@@ -187,7 +187,7 @@
 
     active = { video, proc, port: null, connected: false, tainted: false, appWarning: null };
     active.port = connectPort();
-    subtitle = { original: "", chinese: "", volatile: false, prevChinese: "" };
+    subtitle = { original: "", chinese: "", volatile: false, prevChinese: [] };
     updateWarning();
     requestAnimationFrame(positionLoop);
     refreshButtons();
