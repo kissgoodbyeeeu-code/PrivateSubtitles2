@@ -1,11 +1,10 @@
 import AVFoundation
 import Network
 
-/// 本机 WebSocket 服务（只监听回环地址）：
-/// Safari 扩展把网页视频的声音（16kHz 单声道 Int16）发过来，这里把字幕 JSON 发回去显示在网页上。
+/// 本机回环 TCP 服务（127.0.0.1:47322）：
+/// Safari 扩展的原生部分把网页视频的声音（16kHz 单声道 Int16）转发过来，这里把字幕 JSON 发回去。
+/// 协议见 SafariWire。
 final class SafariAudioServer {
-    static let port: UInt16 = 47322
-
     /// 在网络线程回调
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onConnectionChange: ((Bool) -> Void)?
@@ -15,22 +14,22 @@ final class SafariAudioServer {
     /// 只在 queue 上访问
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var readyCount = 0
+    private var reportedConnected = false
+    private var lastSub: Data?
+    private var lastStatus: Data?
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000,
                                        channels: 1, interleaved: false)!
 
     func start() throws {
         guard listener == nil else { return }
         let params = NWParameters.tcp
-        let ws = NWProtocolWebSocket.Options()
-        ws.autoReplyPing = true
-        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         params.allowLocalEndpointReuse = true
         params.requiredInterfaceType = .loopback // 只接受本机连接
 
-        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!)
+        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: SafariWire.port)!)
         listener.stateUpdateHandler = { state in
             switch state {
-            case .ready: log("Safari 扩展服务已启动（端口 \(Self.port)）")
+            case .ready: log("Safari 扩展服务已启动（端口 \(SafariWire.port)）")
             case .failed(let error): logError("Safari 扩展服务出错: \(error)")
             default: break
             }
@@ -49,17 +48,23 @@ final class SafariAudioServer {
             self.connections.values.forEach { $0.cancel() }
             self.connections.removeAll()
             self.readyCount = 0
+            self.reportedConnected = false
+            self.lastSub = nil
+            self.lastStatus = nil
         }
     }
 
-    /// 把字幕 / 状态发给所有连着的网页
+    /// 把字幕 / 状态发给扩展
     func send(_ message: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return }
-        let meta = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(identifier: "text", metadata: [meta])
+        guard let json = try? JSONSerialization.data(withJSONObject: message) else { return }
+        let frame = SafariWire.frame(.json, json)
+        let type = message["type"] as? String
         queue.async {
+            // 记住最新的字幕和状态，新连上的扩展先补发一次
+            if type == "sub" { self.lastSub = frame }
+            if type == "status" { self.lastStatus = frame }
             for c in self.connections.values where c.state == .ready {
-                c.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
+                c.send(content: frame, completion: .idempotent)
             }
         }
     }
@@ -74,16 +79,20 @@ final class SafariAudioServer {
             case .ready:
                 wasReady = true
                 self.readyCount += 1
-                log("Safari 网页已连接（共 \(self.readyCount) 个）")
-                if self.readyCount == 1 { self.onConnectionChange?(true) }
-                if let connection { self.receive(on: connection) }
+                self.updateConnected()
+                if let connection {
+                    for frame in [self.lastSub, self.lastStatus].compactMap({ $0 }) {
+                        connection.send(content: frame, completion: .idempotent)
+                    }
+                    self.readHeader(connection)
+                }
             case .failed, .cancelled:
                 self.connections[id] = nil
                 if wasReady {
                     wasReady = false
                     self.readyCount -= 1
-                    log("Safari 网页已断开（剩 \(self.readyCount) 个）")
-                    if self.readyCount == 0 { self.onConnectionChange?(false) }
+                    // 扩展进程随时可能被 Safari 回收后马上重连，晚 3 秒再判断是否真的断开
+                    self.queue.asyncAfter(deadline: .now() + 3) { self.updateConnected() }
                 }
             default:
                 break
@@ -92,26 +101,40 @@ final class SafariAudioServer {
         connection.start(queue: queue)
     }
 
-    private func receive(on connection: NWConnection) {
-        connection.receiveMessage { [weak self, weak connection] data, context, _, error in
+    private func updateConnected() {
+        let connected = readyCount > 0
+        guard connected != reportedConnected else { return }
+        reportedConnected = connected
+        log(connected ? "Safari 扩展已连接" : "Safari 扩展已断开")
+        onConnectionChange?(connected)
+    }
+
+    private func readHeader(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: SafariWire.headerSize,
+                           maximumLength: SafariWire.headerSize) { [weak self, weak connection] data, _, isComplete, error in
             guard let self, let connection else { return }
-            if error != nil {
+            guard error == nil, !isComplete, let data,
+                  let (type, length) = SafariWire.parseHeader(data) else {
                 connection.cancel()
                 return
             }
-            if let meta = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                as? NWProtocolWebSocket.Metadata {
-                switch meta.opcode {
-                case .binary:
-                    if let data { self.handleAudio(data) }
-                case .close:
+            if length == 0 {
+                self.readHeader(connection)
+                return
+            }
+            connection.receive(minimumIncompleteLength: length, maximumLength: length) { [weak self, weak connection] payload, _, _, error in
+                guard let self, let connection else { return }
+                guard error == nil, let payload, payload.count == length else {
                     connection.cancel()
                     return
-                default:
-                    break
                 }
+                switch SafariWire.Frame(rawValue: type) {
+                case .audio: self.handleAudio(payload)
+                case .log: log("Safari 扩展：\(String(decoding: payload, as: UTF8.self))")
+                default: break
+                }
+                self.readHeader(connection)
             }
-            self.receive(on: connection)
         }
     }
 

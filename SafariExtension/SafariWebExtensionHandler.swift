@@ -1,12 +1,16 @@
 import Foundation
 import SafariServices
 
-/// Safari 扩展的原生部分。声音和字幕走本机 WebSocket，不经过这里；
-/// 只是 Safari 网页扩展必须有一个原生入口，收到消息原样回个 ok。
+/// Safari 扩展的原生入口：网页通过 browser.runtime.sendNativeMessage 发来声音，
+/// 交给 SafariBridge 转发给主 App，回复里带上最新字幕。
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     func beginRequest(with context: NSExtensionContext) {
+        let item = context.inputItems.first as? NSExtensionItem
+        let message = (item?.userInfo?[SFExtensionMessageKey] as? [String: Any]) ?? [:]
+        let reply = SafariBridge.shared.handle(message)
+
         let response = NSExtensionItem()
-        response.userInfo = [SFExtensionMessageKey: ["ok": true]]
+        response.userInfo = [SFExtensionMessageKey: reply]
         context.completeRequest(returningItems: [response], completionHandler: nil)
     }
 }

@@ -15,9 +15,16 @@ enum TranslatorError: LocalizedError {
     case http(Int, String)
     case api(String)
 
+    var isAuthError: Bool {
+        if case .http(let code, _) = self { return code == 401 || code == 403 }
+        return false
+    }
+
     var errorDescription: String? {
         switch self {
         case .missingKey(let engine): return "请先在设置里填写 \(engine) 的 API Key"
+        case .http(401, _), .http(403, _):
+            return "API Key 不对或已失效。通义千问 / 豆包：打开「海外节点」要用国际站的 Key，关掉则用国内的 Key"
         case .http(let code, let body): return "HTTP \(code): \(body.prefix(300))"
         case .api(let msg): return "API 错误: \(msg)"
         }

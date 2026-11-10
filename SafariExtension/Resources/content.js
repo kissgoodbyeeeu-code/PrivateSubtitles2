@@ -9,7 +9,7 @@
   let ctx = null;                      // 全页面共用一个 AudioContext
   const sources = new WeakMap();       // video → MediaElementSourceNode（每个 video 只能建一次）
   const buttons = new Map();           // video → 按钮
-  let active = null;                   // 正在翻译的 { video, proc, port, ... }
+  let active = null;                   // 正在翻译的 { video, proc, queue, ... }
 
   // ---------- 字幕层 ----------
   const sub = document.createElement("div");
@@ -68,38 +68,85 @@
     requestAnimationFrame(positionLoop);
   }
 
-  // ---------- 和扩展后台 / App 通信 ----------
-  function connectPort() {
-    const port = browser.runtime.connect({ name: "ps-audio" });
-    port.onMessage.addListener((msg) => {
-      if (!msg || !active) return;
-      if (msg.type === "conn") {
-        active.connected = msg.ok;
-        updateWarning();
-      } else if (msg.type === "sub") {
-        subtitle = { original: msg.original || "", chinese: msg.chinese || "", volatile: !!msg.volatile,
-                     prevChinese: Array.isArray(msg.prevChinese) ? msg.prevChinese : [] };
-        render();
-      } else if (msg.type === "status") {
-        active.appWarning = msg.warning || null;
-        updateWarning();
+  // ---------- 和 App 通信（经扩展原生部分）----------
+  // 网页直接连本机端口会被 Safari 拦住，所以走 sendNativeMessage：
+  // 每次带上一小段声音，回复里带回最新字幕。同一时间只有一个请求在路上。
+  async function nativeCall(msg) {
+    if (browser.runtime.sendNativeMessage) {
+      try {
+        return await browser.runtime.sendNativeMessage("application.id", msg);
+      } catch (e) {
+        // 内容脚本里不让直接调，就交给扩展后台转
       }
-    });
-    port.onDisconnect.addListener(() => {
-      // 扩展后台被系统回收时会断开，自动重连
-      if (active && active.port === port) {
-        active.connected = false;
-        updateWarning();
-        setTimeout(() => { if (active && active.port === port) active.port = connectPort(); }, 1000);
+    }
+    return await browser.runtime.sendMessage({ native: msg });
+  }
+
+  function pump() {
+    const a = active;
+    if (!a || a.inFlight) return;
+    let msg;
+    if (a.queue.length) {
+      // 把排队的声音拼起来一次发（最多约 1 秒）
+      let total = 0;
+      const parts = [];
+      while (a.queue.length && total < TARGET_RATE) {
+        const p = a.queue.shift();
+        parts.push(p);
+        total += p.length;
       }
+      const merged = new Int16Array(total);
+      let off = 0;
+      for (const p of parts) { merged.set(p, off); off += p.length; }
+      msg = { type: "audio", data: bytesToBase64(new Uint8Array(merged.buffer)) };
+      // 积压太多（App 处理不过来）就丢掉最旧的，保证字幕不越来越慢
+      if (a.queue.length > 40) a.queue.splice(0, a.queue.length - 10);
+    } else if (!a.helloSent && Date.now() - a.lastCall > 300) {
+      msg = { type: "hello", text: "网页已开始翻译：" + location.host };
+    } else if (Date.now() - a.lastCall > 300) {
+      msg = { type: "poll" };
+    } else {
+      return;
+    }
+    a.inFlight = true;
+    a.lastCall = Date.now();
+    nativeCall(msg).then((reply) => {
+      if (active !== a) return;
+      if (msg.type === "hello" && reply && reply.connected) a.helloSent = true;
+      handleReply(reply);
+    }).catch((e) => {
+      if (active !== a) return;
+      a.connected = false;
+      a.error = "扩展通信失败：" + (e && e.message ? e.message : e);
+      updateWarning();
+    }).finally(() => {
+      a.inFlight = false;
     });
-    return port;
+  }
+
+  function handleReply(reply) {
+    if (!active) return;
+    if (!reply) {
+      active.connected = false;
+      active.error = "扩展没有回复";
+      updateWarning();
+      return;
+    }
+    active.connected = !!reply.connected;
+    active.error = reply.error || null;
+    const msg = reply.sub;
+    if (msg && msg !== active.lastSubRaw) {
+      subtitle = { original: msg.original || "", chinese: msg.chinese || "", volatile: !!msg.volatile,
+                   prevChinese: Array.isArray(msg.prevChinese) ? msg.prevChinese : [] };
+    }
+    active.appWarning = reply.status ? reply.status.warning || null : null;
+    updateWarning();
   }
 
   function updateWarning() {
     if (!active) return;
     if (!active.connected) {
-      warning = "⚠︎ 连不上双语字幕 App：请打开 App，音源选「Safari」，点「开始同传」";
+      warning = "⚠︎ 连不上双语字幕 App：" + (active.error || "请打开 App，音源选「Safari」，点「开始同传」");
     } else if (active.tainted) {
       warning = "⚠︎ 这个网站不允许抓取视频声音（刷新网页可恢复声音）";
     } else {
@@ -176,17 +223,15 @@
       carry = carry + outLen * ratio - n;
       if (carry < 0) carry = 0;
 
-      if (outLen > 0 && active.connected) {
-        try {
-          active.port.postMessage({ type: "audio", data: bytesToBase64(new Uint8Array(out.buffer)) });
-        } catch (_) {}
-      }
+      if (outLen > 0 && active.connected) active.queue.push(out);
     };
     source.connect(proc);
     proc.connect(ctx.destination); // ScriptProcessor 要接到输出才会运行（输出是静音）
 
-    active = { video, proc, port: null, connected: false, tainted: false, appWarning: null };
-    active.port = connectPort();
+    active = { video, proc, connected: false, tainted: false, appWarning: null, error: null,
+               queue: [], inFlight: false, helloSent: false, lastCall: 0, timer: null };
+    active.timer = setInterval(pump, 100);
+    pump();
     subtitle = { original: "", chinese: "", volatile: false, prevChinese: [] };
     updateWarning();
     requestAnimationFrame(positionLoop);
@@ -195,14 +240,14 @@
 
   function stop() {
     if (!active) return;
-    const { video, proc, port } = active;
+    const { video, proc, timer } = active;
     active = null;
     try {
       const source = sources.get(video);
       if (source) source.disconnect(proc);
       proc.disconnect();
     } catch (_) {}
-    try { port.disconnect(); } catch (_) {}
+    clearInterval(timer);
     sub.remove();
     refreshButtons();
   }

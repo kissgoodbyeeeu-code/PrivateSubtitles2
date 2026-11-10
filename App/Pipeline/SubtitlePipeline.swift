@@ -479,6 +479,7 @@ final class SubtitlePipeline {
     @ObservationIgnored private var draftTask: Task<Void, Never>?
     @ObservationIgnored private var draftGeneration = 0
     @ObservationIgnored private var lastDraftStart = Date.distantPast
+    @ObservationIgnored private var authFailedAt = Date.distantPast
 
     static let liveDraftKey = "liveDraftTranslation"
     private var liveDraftEnabled: Bool {
@@ -495,7 +496,8 @@ final class SubtitlePipeline {
 
     /// 话还没说完就先翻一版，字幕几乎和声音同时出来；说完后再用正式译文替换
     private func startDraftIfNeeded() {
-        guard liveDraftEnabled, draftTask == nil, let language = currentLanguage else { return }
+        guard liveDraftEnabled, draftTask == nil, let language = currentLanguage,
+              Date().timeIntervalSince(authFailedAt) > 30 else { return } // Key 不对时别狂发草稿请求
         let text = volatileText
         guard Self.contentCount(text) >= 6,
               Self.remainder(of: text, after: draftSource).count >= 2 || draftSource.isEmpty,
@@ -575,6 +577,10 @@ final class SubtitlePipeline {
                     $0.error = error.localizedDescription
                 }
                 logError("[\(engineName)] 翻译失败: \(error.localizedDescription)")
+                if (error as? TranslatorError)?.isAuthError == true {
+                    authFailedAt = Date()
+                    status = "翻译失败：\(error.localizedDescription)"
+                }
             }
         }
     }

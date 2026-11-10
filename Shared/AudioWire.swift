@@ -13,7 +13,7 @@ enum AudioWire {
     /// 单包最大帧数（防止读到坏数据时分配超大内存）
     static let maxFrames: UInt32 = 96_000
 
-    static func loopbackAddress() -> sockaddr_in {
+    static func loopbackAddress(port: UInt16 = AudioWire.port) -> sockaddr_in {
         var addr = sockaddr_in()
         addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         addr.sin_family = sa_family_t(AF_INET)

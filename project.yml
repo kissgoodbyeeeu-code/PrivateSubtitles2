@@ -72,6 +72,8 @@ targets:
     platform: iOS
     sources:
       - path: SafariExtension/SafariWebExtensionHandler.swift
+      - path: SafariExtension/SafariBridge.swift
+      - path: Shared
       - path: SafariExtension/Resources/manifest.json
         buildPhase: resources
       - path: SafariExtension/Resources/background.js
