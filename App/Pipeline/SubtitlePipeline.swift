@@ -43,6 +43,9 @@ final class SubtitlePipeline {
 
     private let mic = MicrophoneCapture()
     private let receiver = SystemAudioReceiver()
+    private let safariServer = SafariAudioServer()
+    /// 上次发给网页的提醒（变了才重发）
+    @ObservationIgnored private var lastSentWarning: String?? = .none
     private let silentPlayer = SilentAudioPlayer()
     private var transcribers: [LiveTranscriber] = []
     @ObservationIgnored private var detector: LanguageDetector?
@@ -57,11 +60,16 @@ final class SubtitlePipeline {
     @ObservationIgnored var onStatusChange: ((Float, String?) -> Void)?
 
     private func notifySubtitleChange() {
+        let original: String, chinese: String, isVolatile: Bool
         if !volatileText.isEmpty {
             // 正在说新的一句：显示新原文，中文先保留上一句的译文
-            onSubtitleChange?(volatileText, latestLine?.chinese ?? "", true)
+            (original, chinese, isVolatile) = (volatileText, latestLine?.chinese ?? "", true)
         } else {
-            onSubtitleChange?(latestLine?.original ?? "", latestLine?.chinese ?? "", false)
+            (original, chinese, isVolatile) = (latestLine?.original ?? "", latestLine?.chinese ?? "", false)
+        }
+        onSubtitleChange?(original, chinese, isVolatile)
+        if activeSource == .safari {
+            safariServer.send(["type": "sub", "original": original, "chinese": chinese, "volatile": isVolatile])
         }
     }
 
@@ -134,13 +142,18 @@ final class SubtitlePipeline {
                 }
                 listeningSince = Date()
                 status = "正在听（麦克风）…"
-            case .system:
+            case .system, .safari:
+                // 主 App 在后台要一直活着才能收声音
                 try silentPlayer.start()
-                receiver.onBuffer = { buffer in
+                let waitText = source == .system
+                    ? "等待广播：点下方 ⦿ 按钮开始广播"
+                    : "等待 Safari：在网页视频右上角点「译」"
+                let listenText = source == .system ? "正在听（系统声音）…" : "正在听（Safari 网页）…"
+                let onBuffer: (AVAudioPCMBuffer) -> Void = { buffer in
                     monitor.process(buffer)
                     for t in transcribers { t.append(buffer) }
                 }
-                receiver.onConnectionChange = { [weak self] connected in
+                let onConnection: (Bool) -> Void = { [weak self] connected in
                     Task { @MainActor in
                         guard let self, self.isRunning else { return }
                         self.broadcastConnected = connected
@@ -148,12 +161,23 @@ final class SubtitlePipeline {
                             monitor.reset()
                             self.listeningSince = Date()
                             self.lastSpeechAt = nil
+                            // 新网页连上：把当前字幕和提醒补发一次
+                            self.lastSentWarning = .none
+                            self.notifySubtitleChange()
                         }
-                        self.status = connected ? "正在听（系统声音）…" : "等待广播：点下方 ⦿ 按钮开始广播"
+                        self.status = connected ? listenText : waitText
                     }
                 }
-                try receiver.start()
-                status = "等待广播：点下方 ⦿ 按钮开始广播"
+                if source == .system {
+                    receiver.onBuffer = onBuffer
+                    receiver.onConnectionChange = onConnection
+                    try receiver.start()
+                } else {
+                    safariServer.onBuffer = onBuffer
+                    safariServer.onConnectionChange = onConnection
+                    try safariServer.start()
+                }
+                status = waitText
             }
             self.transcribers = transcribers
             activeSource = source
@@ -164,6 +188,7 @@ final class SubtitlePipeline {
         } catch {
             mic.stop()
             receiver.stop()
+            safariServer.stop()
             silentPlayer.stop()
             for t in started { await t.stop() }
             currentLanguage = nil
@@ -178,6 +203,7 @@ final class SubtitlePipeline {
         guard isRunning else { return }
         mic.stop()
         receiver.stop()
+        safariServer.stop()
         silentPlayer.stop()
         broadcastConnected = false
         activeSource = nil
@@ -230,8 +256,8 @@ final class SubtitlePipeline {
         let level = fresh ? AudioLevelMonitor.normalized(snap.rms) : 0
 
         let newHealth: AudioHealth
-        if source == .system && !broadcastConnected {
-            newHealth = .waitingBroadcast
+        if source != .microphone && !broadcastConnected {
+            newHealth = .waitingConnection(source)
         } else if let since = listeningSince {
             let lastData = snap.lastBufferAt ?? since
             let lastSound = snap.lastSoundAt ?? since
@@ -264,6 +290,13 @@ final class SubtitlePipeline {
             audioLevel = quantized
         }
         onStatusChange?(audioLevel, health.shortMessage)
+        if source == .safari && broadcastConnected {
+            let warning = health.shortMessage
+            if lastSentWarning != .some(warning) {
+                lastSentWarning = .some(warning)
+                safariServer.send(["type": "status", "warning": warning ?? NSNull()])
+            }
+        }
     }
 
     // MARK: - 识别结果处理

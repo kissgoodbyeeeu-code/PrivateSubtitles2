@@ -58,6 +58,11 @@ final class PiPSubtitleController: NSObject {
         log("画中画已初始化")
     }
 
+    /// Safari 模式字幕直接显示在网页上，切到后台时不用自动弹悬浮窗（手动开仍可以）
+    func setAutoStart(_ on: Bool) {
+        pip?.canStartPictureInPictureAutomaticallyFromInline = on
+    }
+
     func toggle() {
         guard let pip else { return }
         if pip.isPictureInPictureActive {

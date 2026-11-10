@@ -41,6 +41,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showLog) { LogView() }
+            .onChange(of: pipeline.activeSource) {
+                pip.setAutoStart(pipeline.activeSource != .safari)
+            }
         }
     }
 
@@ -91,6 +94,12 @@ struct ContentView: View {
                 Text("此设备不支持画中画")
             } else if pip.isActive {
                 Text("悬浮字幕已打开，可以切到其他 App 看视频了")
+            } else if source == .safari && !pipeline.isRunning {
+                Text("第一次用：系统设置 → App → Safari → 扩展 → 打开「双语字幕」，网站权限选「允许」。然后点「开始同传」，去 Safari 播放视频，点视频右上角的「译」")
+            } else if pipeline.activeSource == .safari && !pipeline.broadcastConnected {
+                Text("去 Safari 播放视频，点视频右上角的「译」。字幕会直接显示在网页视频上")
+            } else if pipeline.activeSource == .safari {
+                Text("字幕显示在网页视频上。视频全屏时看不到网页字幕，可以点下方按钮打开悬浮字幕")
             } else if pipeline.activeSource == .system && !pipeline.broadcastConnected {
                 Text("点 ⦿ →「开始直播」，然后切到任意 App 播放视频")
             } else if pipeline.isRunning {

@@ -24,6 +24,7 @@ targets:
       - path: Shared
     dependencies:
       - target: BroadcastExtension
+      - target: SafariExtension
     info:
       path: App/Info.plist
       properties:
@@ -63,4 +64,36 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kissgoodbye.privatesubtitles.broadcast
+        TARGETED_DEVICE_FAMILY: "1"
+
+  # Safari 网页扩展：在网页视频上抓声音、显示字幕（不需要开直播）
+  SafariExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: SafariExtension/SafariWebExtensionHandler.swift
+      - path: SafariExtension/Resources/manifest.json
+        buildPhase: resources
+      - path: SafariExtension/Resources/background.js
+        buildPhase: resources
+      - path: SafariExtension/Resources/content.js
+        buildPhase: resources
+      - path: SafariExtension/Resources/content.css
+        buildPhase: resources
+      - path: SafariExtension/Resources/_locales
+        type: folder
+        buildPhase: resources
+      - path: SafariExtension/Resources/images
+        type: folder
+        buildPhase: resources
+    info:
+      path: SafariExtension/Info.plist
+      properties:
+        CFBundleDisplayName: 双语字幕
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.Safari.web-extension
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SafariWebExtensionHandler
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kissgoodbye.privatesubtitles.safari
         TARGETED_DEVICE_FAMILY: "1"

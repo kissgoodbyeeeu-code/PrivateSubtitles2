@@ -14,5 +14,6 @@ Payload/
 
 .DS_Store
 Broadcast/Info.plist
+SafariExtension/Info.plist
 *.entitlements
 dist/
