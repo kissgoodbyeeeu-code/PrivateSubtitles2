@@ -40,6 +40,7 @@ struct SettingsView: View {
                         .autocorrectionDisabled()
                     TextField(engine.defaultModel, text: binding(for: engine, in: $models))
                         .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
                     if engine.hasInternationalRegion {
                         Toggle("海外节点", isOn: Binding(
                             get: { international[engine] ?? engine.isInternational },
@@ -48,7 +49,6 @@ struct SettingsView: View {
                                 UserDefaults.standard.set(value, forKey: engine.regionDefaultsKey)
                             }))
                     }
-                        .autocorrectionDisabled()
                 } header: {
                     Text("\(engine.title) 的 API Key 和模型")
                 } footer: {
