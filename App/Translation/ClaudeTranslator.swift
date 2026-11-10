@@ -1,6 +1,6 @@
 import Foundation
 
-/// 用 Claude Messages API（原始 HTTP + SSE 流式）把英文字幕译成中文。
+/// 用 Claude Messages API（原始 HTTP + SSE 流式）把外语字幕译成中文。
 /// Swift 没有官方 SDK，所以直接调 REST 接口。
 struct ClaudeTranslator: SubtitleTranslator {
     let apiKey: String
@@ -8,13 +8,14 @@ struct ClaudeTranslator: SubtitleTranslator {
 
     private static let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
 
-    func translate(_ text: String, context: [TranslationContext]) -> AsyncThrowingStream<String, Error> {
+    func translate(_ text: String, language: SourceLanguage, context: [TranslationContext]) -> AsyncThrowingStream<String, Error> {
         makeTranslationStream { continuation in
-            try await run(text: text, context: context, continuation: continuation)
+            try await run(text: text, language: language, context: context, continuation: continuation)
         }
     }
 
     private func run(text: String,
+                     language: SourceLanguage,
                      context: [TranslationContext],
                      continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
         var body: [String: Any] = [
@@ -25,7 +26,7 @@ struct ClaudeTranslator: SubtitleTranslator {
             "output_config": ["effort": "low"],
             "system": TranslationPrompt.system,
             "messages": [
-                ["role": "user", "content": TranslationPrompt.userContent(text: text, context: context)],
+                ["role": "user", "content": TranslationPrompt.userContent(text: text, language: language, context: context)],
             ],
         ]
         // Haiku 可以完全关闭思考；Sonnet 5.5 / Opus 5.5 不允许 disabled（会 400），只靠低 effort

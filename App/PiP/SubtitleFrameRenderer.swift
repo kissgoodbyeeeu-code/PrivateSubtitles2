@@ -6,7 +6,7 @@ final class SubtitleFrameRenderer {
     struct Content: Equatable {
         var english: String = ""
         var chinese: String = ""
-        /// 英文还在识别中（未定稿）
+        /// 原文还在识别中（未定稿）
         var isVolatile: Bool = false
         /// 输入音量 0...1
         var level: Float = 0
@@ -71,13 +71,13 @@ final class SubtitleFrameRenderer {
             return buffer
         }
 
-        // 英文：最多 2 行，长句只保留结尾；有提醒时这一行改成橙色提醒
+        // 原文：最多 2 行，长句只保留结尾；有提醒时这一行改成橙色提醒
         let enRect = CGRect(x: pad, y: 28, width: width - 40, height: enSize * 2.6)
         if let warning = content.warning {
             draw(warning, font: .systemFont(ofSize: enSize * 0.9, weight: .semibold),
                  color: UIColor(red: 1, green: 0.6, blue: 0.2, alpha: 1), in: enRect)
         } else {
-            draw(Self.tail(content.english, max: Int(110 / scale)),
+            draw(Self.tail(content.english, max: Int((Self.isWide(content.english) ? 55 : 110) / scale)),
                  font: .systemFont(ofSize: enSize),
                  color: UIColor.white.withAlphaComponent(content.isVolatile ? 0.55 : 0.85),
                  in: enRect)
@@ -118,6 +118,16 @@ final class SubtitleFrameRenderer {
             .paragraphStyle: style,
         ])
         attributed.draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
+    }
+
+    /// 日文、韩文、汉字一个字更宽，原文一行能放的字数少一半
+    private static func isWide(_ text: String) -> Bool {
+        text.unicodeScalars.contains { u in
+            u.properties.isIdeographic
+                || (0x3040...0x30FF).contains(u.value)   // 平假名、片假名
+                || (0xAC00...0xD7AF).contains(u.value)   // 韩文音节
+                || (0x1100...0x11FF).contains(u.value)   // 韩文字母
+        }
     }
 
     /// 字太长时只显示最后一段，保证最新的内容总能看到。

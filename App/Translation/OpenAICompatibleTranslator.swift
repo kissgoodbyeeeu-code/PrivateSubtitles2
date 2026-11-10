@@ -9,13 +9,14 @@ struct OpenAICompatibleTranslator: SubtitleTranslator {
     /// 各家特有的参数（比如关闭思考）
     let extraBody: [String: Any]
 
-    func translate(_ text: String, context: [TranslationContext]) -> AsyncThrowingStream<String, Error> {
+    func translate(_ text: String, language: SourceLanguage, context: [TranslationContext]) -> AsyncThrowingStream<String, Error> {
         makeTranslationStream { continuation in
-            try await run(text: text, context: context, continuation: continuation)
+            try await run(text: text, language: language, context: context, continuation: continuation)
         }
     }
 
     private func run(text: String,
+                     language: SourceLanguage,
                      context: [TranslationContext],
                      continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
         var body: [String: Any] = [
@@ -24,7 +25,7 @@ struct OpenAICompatibleTranslator: SubtitleTranslator {
             "max_tokens": 512,
             "messages": [
                 ["role": "system", "content": TranslationPrompt.system],
-                ["role": "user", "content": TranslationPrompt.userContent(text: text, context: context)],
+                ["role": "user", "content": TranslationPrompt.userContent(text: text, language: language, context: context)],
             ],
         ]
         for (k, v) in extraBody { body[k] = v }

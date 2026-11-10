@@ -2,20 +2,22 @@ import AVFoundation
 import Foundation
 import Observation
 
-/// 串起整条链路：音频 → 端侧识别 → 断句 → Claude 翻译 → 字幕状态。
+/// 串起整条链路：音频 → 端侧识别（可自动检测语言）→ 断句 → 大模型翻译 → 字幕状态。
 @MainActor
 @Observable
 final class SubtitlePipeline {
     struct Line: Identifiable, Equatable {
         let id = UUID()
-        var english: String
+        var original: String
+        var language: SourceLanguage
+        var createdAt = Date()
         var chinese: String = ""
         var isTranslating = false
         var error: String?
     }
 
     private(set) var lines: [Line] = []
-    /// 正在说、还没定稿的英文（灰色显示）
+    /// 正在说、还没定稿的原文（灰色显示）
     private(set) var volatileText = ""
     private(set) var isRunning = false
     private(set) var isStarting = false
@@ -23,6 +25,10 @@ final class SubtitlePipeline {
 
     private(set) var activeSource: AudioSource?
     private(set) var broadcastConnected = false
+    /// 当前识别的语言（自动检测时会变化）
+    private(set) var currentLanguage: SourceLanguage?
+    /// 这次是否开启了自动检测
+    private(set) var isAutoDetect = false
 
     /// 输入音量 0...1（给电平条用）
     private(set) var audioLevel: Float = 0
@@ -38,23 +44,24 @@ final class SubtitlePipeline {
     private let mic = MicrophoneCapture()
     private let receiver = SystemAudioReceiver()
     private let silentPlayer = SilentAudioPlayer()
-    private var transcriber: LiveTranscriber?
+    private var transcribers: [LiveTranscriber] = []
+    @ObservationIgnored private var detector: LanguageDetector?
     private let maxLines = 300
     private let contextSize = 3
 
     var latestLine: Line? { lines.last }
 
-    /// 字幕变化时回调（英文, 中文, 英文是否未定稿），给画中画用
+    /// 字幕变化时回调（原文, 中文, 原文是否未定稿），给画中画用
     @ObservationIgnored var onSubtitleChange: ((String, String, Bool) -> Void)?
     /// 电平 / 提醒变化时回调（电平 0...1, 悬浮窗提醒），给画中画用
     @ObservationIgnored var onStatusChange: ((Float, String?) -> Void)?
 
     private func notifySubtitleChange() {
         if !volatileText.isEmpty {
-            // 正在说新的一句：显示新英文，中文先保留上一句的译文
+            // 正在说新的一句：显示新原文，中文先保留上一句的译文
             onSubtitleChange?(volatileText, latestLine?.chinese ?? "", true)
         } else {
-            onSubtitleChange?(latestLine?.english ?? "", latestLine?.chinese ?? "", false)
+            onSubtitleChange?(latestLine?.original ?? "", latestLine?.chinese ?? "", false)
         }
     }
 
@@ -84,19 +91,45 @@ final class SubtitlePipeline {
             return
         }
 
-        let transcriber = LiveTranscriber()
+        let languageSetting = SourceLanguage.current
+        var started: [LiveTranscriber] = []
         do {
-            status = "准备语音模型…"
-            try await transcriber.start(locale: Locale(identifier: "en-US")) { [weak self] update in
-                Task { @MainActor in self?.handle(update) }
+            for language in languageSetting.transcriberLanguages {
+                status = "准备\(language.title)语音模型…（第一次需要下载）"
+                let t = LiveTranscriber(language: language)
+                do {
+                    try await t.start { [weak self] update in
+                        Task { @MainActor in self?.handle(update) }
+                    }
+                    started.append(t)
+                } catch {
+                    // 自动检测时某种语言起不来就跳过，其他语言照常
+                    guard languageSetting == .auto else { throw error }
+                    logError("\(language.title)识别启动失败，自动检测将跳过它: \(error.localizedDescription)")
+                }
             }
+            guard !started.isEmpty else {
+                throw LiveTranscriber.TranscriberError.localeNotSupported("全部语言")
+            }
+            isAutoDetect = languageSetting == .auto && started.count > 1
+            let available = started.map(\.language)
+            let initial = available.contains(SourceLanguage.lastDetected) && languageSetting == .auto
+                ? SourceLanguage.lastDetected
+                : available[0]
+            currentLanguage = initial
+            detector = isAutoDetect ? LanguageDetector(initial: initial) : nil
+            if isAutoDetect {
+                log("自动检测语言：\(available.map(\.title).joined(separator: "、"))，先按\(initial.title)显示")
+            }
+
+            let transcribers = started
             let monitor = levelMonitor
             monitor.reset()
             switch source {
             case .microphone:
                 try mic.start { buffer in
                     monitor.process(buffer)
-                    transcriber.append(buffer)
+                    for t in transcribers { t.append(buffer) }
                 }
                 listeningSince = Date()
                 status = "正在听（麦克风）…"
@@ -104,7 +137,7 @@ final class SubtitlePipeline {
                 try silentPlayer.start()
                 receiver.onBuffer = { buffer in
                     monitor.process(buffer)
-                    transcriber.append(buffer)
+                    for t in transcribers { t.append(buffer) }
                 }
                 receiver.onConnectionChange = { [weak self] connected in
                     Task { @MainActor in
@@ -121,7 +154,7 @@ final class SubtitlePipeline {
                 try receiver.start()
                 status = "等待广播：点下方 ⦿ 按钮开始广播"
             }
-            self.transcriber = transcriber
+            self.transcribers = transcribers
             activeSource = source
             isRunning = true
             lastSpeechAt = nil
@@ -131,7 +164,10 @@ final class SubtitlePipeline {
             mic.stop()
             receiver.stop()
             silentPlayer.stop()
-            await transcriber.stop()
+            for t in started { await t.stop() }
+            currentLanguage = nil
+            isAutoDetect = false
+            detector = nil
             status = "启动失败：\(error.localizedDescription)"
             logError("启动失败: \(error)")
         }
@@ -145,8 +181,11 @@ final class SubtitlePipeline {
         broadcastConnected = false
         activeSource = nil
         stopHealthChecks()
-        await transcriber?.stop()
-        transcriber = nil
+        for t in transcribers { await t.stop() }
+        transcribers = []
+        detector = nil
+        currentLanguage = nil
+        isAutoDetect = false
         isRunning = false
         volatileText = ""
         status = "已停止"
@@ -226,20 +265,49 @@ final class SubtitlePipeline {
     // MARK: - 识别结果处理
 
     private func handle(_ update: LiveTranscriber.Update) {
+        guard isRunning else { return }
         let text = update.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 自动检测：所有语言的定稿结果都参与打分
+        if update.isFinal, !text.isEmpty, let detector {
+            let previous = detector.active
+            if detector.add(language: update.language, text: text,
+                            confidence: update.confidence, duration: update.duration) {
+                switchLanguage(from: previous, to: detector.active, detector: detector)
+                return
+            }
+        }
+
+        // 只显示当前语言的识别结果
+        guard update.language == currentLanguage else { return }
         if !text.isEmpty { lastSpeechAt = Date() }
         if update.isFinal {
             volatileText = ""
             guard !text.isEmpty else { return }
-            appendLine(text)
+            appendLine(text, language: update.language)
         } else {
             volatileText = text
         }
         notifySubtitleChange()
     }
 
-    private func appendLine(_ english: String) {
-        let line = Line(english: english, isTranslating: true)
+    /// 切换语言：撤掉旧语言刚才识别出的几句（多半是乱码），补上新语言最近的几句
+    private func switchLanguage(from old: SourceLanguage, to new: SourceLanguage, detector: LanguageDetector) {
+        let recentWindow: TimeInterval = 10
+        let now = Date()
+        lines.removeAll { $0.language == old && now.timeIntervalSince($0.createdAt) < recentWindow }
+        currentLanguage = new
+        SourceLanguage.lastDetected = new
+        volatileText = ""
+        lastSpeechAt = now
+        for text in detector.recentTexts(for: new, within: recentWindow) {
+            appendLine(text, language: new)
+        }
+        notifySubtitleChange()
+    }
+
+    private func appendLine(_ text: String, language: SourceLanguage) {
+        let line = Line(original: text, language: language, isTranslating: true)
         lines.append(line)
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
         translate(lineID: line.id)
@@ -249,11 +317,12 @@ final class SubtitlePipeline {
 
     private func translate(lineID: UUID) {
         guard let index = lines.firstIndex(where: { $0.id == lineID }) else { return }
-        let english = lines[index].english
+        let original = lines[index].original
+        let language = lines[index].language
         let context = lines[..<index]
             .filter { !$0.chinese.isEmpty && $0.error == nil }
             .suffix(contextSize)
-            .map { TranslationContext(english: $0.english, chinese: $0.chinese) }
+            .map { TranslationContext(original: $0.original, chinese: $0.chinese) }
 
         let engine = TranslationEngine.current
         let translator: SubtitleTranslator
@@ -271,11 +340,11 @@ final class SubtitlePipeline {
 
         Task {
             do {
-                for try await piece in translator.translate(english, context: Array(context)) {
+                for try await piece in translator.translate(original, language: language, context: Array(context)) {
                     update(lineID) { $0.chinese += piece }
                 }
                 update(lineID) { $0.isTranslating = false }
-                log(String(format: "[%@] 翻译完成 %.2fs: %@", engineName, Date().timeIntervalSince(started), english))
+                log(String(format: "[%@] 翻译完成 %.2fs: %@", engineName, Date().timeIntervalSince(started), original))
             } catch {
                 update(lineID) {
                     $0.isTranslating = false

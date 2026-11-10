@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(TranslationEngine.storageKey) private var engine: TranslationEngine = .claude
     @AppStorage(SettingsKeys.fontSize) private var fontSize: Double = 22
+    @AppStorage(SourceLanguage.storageKey) private var sourceLanguage: SourceLanguage = .auto
 
     /// 每个引擎各自的 Key 和模型，切换引擎时不会互相覆盖
     @State private var keys: [TranslationEngine: String] = [:]
@@ -45,13 +46,23 @@ struct SettingsView: View {
                     Text("Key 在 \(engine.consoleURL) 创建，只保存在本机钥匙串。模型留空则用默认的 \(engine.defaultModel)。")
                 }
 
+                Section {
+                    Picker("视频语言", selection: $sourceLanguage) {
+                        ForEach(SourceLanguage.allCases) { Text($0.title).tag($0) }
+                    }
+                } header: {
+                    Text("识别语言")
+                } footer: {
+                    Text("自动检测会同时识别英、日、韩、西四种语言，挑最像的那种，比较耗电发热；固定一种语言更省电、更准。改了之后要重新开始同传才生效。每种语言第一次使用要下载语音模型。")
+                }
+
                 Section("字幕字号：\(Int(fontSize))") {
                     Slider(value: $fontSize, in: 14...40, step: 1)
                 }
 
                 Section("关于") {
-                    LabeledContent("识别", value: "iOS 端侧 SpeechTranscriber（英文）")
-                    LabeledContent("翻译", value: "\(engine.title)（英 → 中）")
+                    LabeledContent("识别", value: "iOS 端侧 SpeechTranscriber（英/日/韩/西）")
+                    LabeledContent("翻译", value: "\(engine.title)（→ 中文）")
                 }
             }
             .navigationTitle("设置")

@@ -9,7 +9,7 @@ enum AudioHealth: Equatable {
     case noAudioData(AudioSource)
     /// 有数据但一直很安静
     case silent(AudioSource)
-    /// 有声音，但识别不出英文语音
+    /// 有声音，但识别不出语音
     case noSpeech
 
     /// 收不到数据多久后提醒
@@ -33,7 +33,7 @@ enum AudioHealth: Equatable {
         case .silent(.microphone):
             return "没检测到声音：请把外放声音开大，或让手机靠近声源"
         case .noSpeech:
-            return "有声音，但没识别到英文语音（可能是音乐或非英语内容）"
+            return "有声音，但没识别到语音（可能是音乐，或不是英/日/韩/西语，或识别语言选错了）"
         }
     }
 
@@ -46,7 +46,7 @@ enum AudioHealth: Equatable {
         case .noAudioData(.microphone): return "⚠︎ 麦克风没有数据"
         case .silent(.system): return "⚠︎ 没检测到声音（受版权保护的视频会被静音）"
         case .silent(.microphone): return "⚠︎ 没检测到声音，请开大外放"
-        case .noSpeech: return "⚠︎ 有声音，但没识别到英文语音"
+        case .noSpeech: return "⚠︎ 有声音，但没识别到语音"
         }
     }
 }

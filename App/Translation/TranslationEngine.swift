@@ -1,12 +1,12 @@
 import Foundation
 
-/// 所有翻译引擎的统一接口：输入一句英文 + 前文，流式返回中文片段。
+/// 所有翻译引擎的统一接口：输入一句外语原文 + 前文，流式返回中文片段。
 protocol SubtitleTranslator {
-    func translate(_ text: String, context: [TranslationContext]) -> AsyncThrowingStream<String, Error>
+    func translate(_ text: String, language: SourceLanguage, context: [TranslationContext]) -> AsyncThrowingStream<String, Error>
 }
 
 struct TranslationContext {
-    let english: String
+    let original: String
     let chinese: String
 }
 
@@ -71,7 +71,7 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
     var note: String {
         switch self {
         case .claude: return "国内需要代理。Haiku 最快最便宜；也可填 claude-sonnet-5-5 / claude-opus-5-5。"
-        case .deepseek: return "国内直连，英译中质量好。"
+        case .deepseek: return "国内直连，翻译质量好。"
         case .qwen: return "国内直连（阿里云百炼）。也可填 qwen-flash、qwen-max 等。"
         case .doubao: return "国内直连（火山方舟）。模型名以控制台「模型广场」里显示的 ID 为准，需要先开通该模型。"
         }
@@ -126,24 +126,25 @@ enum TranslationEngine: String, CaseIterable, Identifiable {
 /// 所有引擎共用的提示词
 enum TranslationPrompt {
     static let system = """
-    你是专业的视频同声传译。把用户给出的一句英文字幕翻译成自然、简洁的简体中文字幕。
+    你是专业的视频同声传译。把用户给出的一句外语字幕（英语、日语、韩语或西班牙语）翻译成自然、简洁的简体中文字幕。
     规则：
     - 只输出译文本身，不要解释、注释、引号或原文。
     - 口语化、符合中文表达习惯，长度尽量接近原句。
-    - 人名、品牌、专有名词用常见中文译法；没有通用译法的保留英文。
-    - 语音识别可能有错字，结合上下文推断原意。
+    - 人名、品牌、专有名词用常见中文译法；没有通用译法的保留原文。
+    - 语音识别可能有错字或同音误识，结合上下文推断原意。
+    - 原文语言是自动识别的，如果看起来不是标注的语言，按实际语言翻译。
     """
 
-    static func userContent(text: String, context: [TranslationContext]) -> String {
+    static func userContent(text: String, language: SourceLanguage, context: [TranslationContext]) -> String {
         var content = ""
         if !context.isEmpty {
             content += "前文（仅供理解语境，不要翻译）：\n"
             for pair in context {
-                content += "EN: \(pair.english)\nZH: \(pair.chinese)\n"
+                content += "原文: \(pair.original)\n译文: \(pair.chinese)\n"
             }
             content += "\n"
         }
-        content += "需要翻译的句子：\n\(text)"
+        content += "需要翻译的句子（\(language.title)）：\n\(text)"
         return content
     }
 }

@@ -1,12 +1,18 @@
 import AVFoundation
+import CoreMedia
 import Speech
 
-/// iOS 26 端侧英文语音识别（SpeechAnalyzer + SpeechTranscriber）。
-/// 免费、离线；第一次使用会自动下载英文模型。
+/// iOS 26 端侧语音识别（SpeechAnalyzer + SpeechTranscriber），一个实例识别一种语言。
+/// 免费、离线；第一次使用某种语言会自动下载对应模型。
 final class LiveTranscriber {
     struct Update: Sendable {
+        let language: SourceLanguage
         let text: String
         let isFinal: Bool
+        /// 平均置信度 0...1（拿不到时为 nil）
+        let confidence: Double?
+        /// 这段语音的时长（秒）
+        let duration: Double
     }
 
     enum TranscriberError: LocalizedError {
@@ -18,11 +24,16 @@ final class LiveTranscriber {
         }
     }
 
+    let language: SourceLanguage
     private var analyzer: SpeechAnalyzer?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var analyzerFormat: AVAudioFormat?
     private let converter = BufferConverter()
+
+    init(language: SourceLanguage) {
+        self.language = language
+    }
 
     static func requestPermission() async -> Bool {
         await withCheckedContinuation { cont in
@@ -32,12 +43,13 @@ final class LiveTranscriber {
         }
     }
 
-    func start(locale: Locale, onUpdate: @escaping @Sendable (Update) -> Void) async throws {
+    func start(onUpdate: @escaping @Sendable (Update) -> Void) async throws {
+        let locale = language.locale
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
             reportingOptions: [.volatileResults],
-            attributeOptions: []
+            attributeOptions: [.transcriptionConfidence]
         )
 
         try await ensureModel(transcriber: transcriber, locale: locale)
@@ -45,25 +57,42 @@ final class LiveTranscriber {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber])
         analyzerFormat = format
-        log("识别模型音频格式: \(format.map { "\($0.sampleRate)Hz \($0.channelCount)ch" } ?? "未知")")
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         inputContinuation = continuation
 
+        let language = self.language
         resultsTask = Task {
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
-                    onUpdate(Update(text: text, isFinal: result.isFinal))
+                    onUpdate(Update(language: language,
+                                    text: text,
+                                    isFinal: result.isFinal,
+                                    confidence: result.isFinal ? Self.averageConfidence(result.text) : nil,
+                                    duration: result.range.duration.seconds.isFinite ? result.range.duration.seconds : 0))
                 }
             } catch {
-                logError("识别结果流出错: \(error.localizedDescription)")
+                logError("[\(language.title)] 识别结果流出错: \(error.localizedDescription)")
             }
         }
 
         try await analyzer.start(inputSequence: stream)
         self.analyzer = analyzer
-        log("语音识别已启动 (\(locale.identifier))")
+        log("语音识别已启动 (\(locale.identifier))，格式 \(format.map { "\($0.sampleRate)Hz" } ?? "未知")")
+    }
+
+    /// 按字数加权的平均置信度
+    private static func averageConfidence(_ text: AttributedString) -> Double? {
+        var total = 0.0
+        var weight = 0.0
+        for run in text.runs {
+            guard let c = run.transcriptionConfidence else { continue }
+            let n = Double(text[run.range].characters.count)
+            total += c * n
+            weight += n
+        }
+        return weight > 0 ? total / weight : nil
     }
 
     /// 在音频线程调用。
@@ -88,7 +117,6 @@ final class LiveTranscriber {
         resultsTask?.cancel()
         resultsTask = nil
         analyzer = nil
-        log("语音识别已停止")
     }
 
     private func ensureModel(transcriber: SpeechTranscriber, locale: Locale) async throws {
@@ -98,9 +126,9 @@ final class LiveTranscriber {
             throw TranscriberError.localeNotSupported(wanted)
         }
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            log("正在下载英文语音模型…")
+            log("正在下载\(language.title)语音模型…")
             try await request.downloadAndInstall()
-            log("英文语音模型下载完成")
+            log("\(language.title)语音模型下载完成")
         }
     }
 }

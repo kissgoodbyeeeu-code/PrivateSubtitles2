@@ -54,6 +54,15 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer()
+            if let lang = pipeline.currentLanguage {
+                Text(pipeline.isAutoDetect ? "自动·\(lang.title)" : lang.title)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    .foregroundStyle(Color.accentColor)
+                    .animation(.default, value: lang)
+            }
             if pipeline.isRunning {
                 LevelMeter(level: pipeline.audioLevel)
             }
@@ -100,9 +109,14 @@ struct ContentView: View {
         ScrollViewReader { proxy in
             List(pipeline.lines) { line in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(line.english)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(line.language.tag)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                        Text(line.original)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                     if let error = line.error {
                         Text("翻译失败：\(error)").font(.caption).foregroundStyle(.red)
                     } else {
