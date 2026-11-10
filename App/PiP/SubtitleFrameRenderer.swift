@@ -12,6 +12,8 @@ final class SubtitleFrameRenderer {
         var level: Float = 0
         /// 没声音等提醒（显示在英文那一行的位置）
         var warning: String?
+        /// 上一句译文（淡色显示在最上面，字幕停留更久）
+        var previousChinese: String = ""
     }
 
     /// 3:1 的横条，适合当字幕悬浮窗
@@ -65,14 +67,26 @@ final class SubtitleFrameRenderer {
 
         drawLevelMeter(content.level, in: ctx)
 
-        if content.english.isEmpty && content.chinese.isEmpty && content.warning == nil {
+        if content.english.isEmpty && content.chinese.isEmpty && content.warning == nil
+            && content.previousChinese.isEmpty {
             draw("等待语音…", font: .systemFont(ofSize: enSize), color: .gray,
                  in: CGRect(x: pad, y: size.height / 2 - enSize, width: width - 40, height: enSize * 2))
             return buffer
         }
 
+        // 上一句译文：1 行，淡黄色
+        var top: CGFloat = 22
+        let prevSize = zhSize * 0.62
+        if !content.previousChinese.isEmpty {
+            draw(Self.tail(content.previousChinese, max: Int(width / prevSize) - 1),
+                 font: .systemFont(ofSize: prevSize, weight: .medium),
+                 color: UIColor(red: 1, green: 0.85, blue: 0.2, alpha: 0.45),
+                 in: CGRect(x: pad, y: top, width: width - 40, height: prevSize * 1.35))
+        }
+        top += prevSize * 1.45
+
         // 原文：最多 2 行，长句只保留结尾；有提醒时这一行改成橙色提醒
-        let enRect = CGRect(x: pad, y: 28, width: width - 40, height: enSize * 2.6)
+        let enRect = CGRect(x: pad, y: top, width: width - 40, height: enSize * 2.5)
         if let warning = content.warning {
             draw(warning, font: .systemFont(ofSize: enSize * 0.9, weight: .semibold),
                  color: UIColor(red: 1, green: 0.6, blue: 0.2, alpha: 1), in: enRect)

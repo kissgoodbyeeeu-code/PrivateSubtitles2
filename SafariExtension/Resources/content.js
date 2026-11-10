@@ -14,10 +14,11 @@
   // ---------- 字幕层 ----------
   const sub = document.createElement("div");
   sub.className = "ps-sub";
-  sub.innerHTML = '<div class="ps-box"><div class="ps-orig"></div><div class="ps-zh"></div></div>';
+  sub.innerHTML = '<div class="ps-box"><div class="ps-prev"></div><div class="ps-orig"></div><div class="ps-zh"></div></div>';
+  const prevEl = sub.querySelector(".ps-prev");
   const origEl = sub.querySelector(".ps-orig");
   const zhEl = sub.querySelector(".ps-zh");
-  let subtitle = { original: "", chinese: "", volatile: false };
+  let subtitle = { original: "", chinese: "", volatile: false, prevChinese: "" };
   let warning = null;
 
   function render() {
@@ -29,7 +30,9 @@
       origEl.className = "ps-orig" + (subtitle.volatile ? " ps-volatile" : "");
     }
     zhEl.textContent = tail(subtitle.chinese, 60);
-    const empty = !origEl.textContent && !zhEl.textContent;
+    prevEl.textContent = tail(subtitle.prevChinese, 40);
+    prevEl.style.display = subtitle.prevChinese ? "block" : "none";
+    const empty = !origEl.textContent && !zhEl.textContent && !prevEl.textContent;
     sub.querySelector(".ps-box").style.display = empty ? "none" : "inline-block";
   }
 
@@ -53,9 +56,10 @@
     if (r.width < 10 || r.height < 10) {
       sub.style.display = "none";
     } else {
-      const zhSize = Math.max(14, Math.min(30, r.width / 22));
+      const zhSize = Math.max(12, Math.min(24, r.width / 28));
       zhEl.style.fontSize = zhSize + "px";
       origEl.style.fontSize = Math.round(zhSize * 0.72) + "px";
+      prevEl.style.fontSize = Math.round(zhSize * 0.78) + "px";
       sub.style.display = "block";
       sub.style.left = r.left + r.width * 0.04 + "px";
       sub.style.width = r.width * 0.92 + "px";
@@ -73,7 +77,8 @@
         active.connected = msg.ok;
         updateWarning();
       } else if (msg.type === "sub") {
-        subtitle = { original: msg.original || "", chinese: msg.chinese || "", volatile: !!msg.volatile };
+        subtitle = { original: msg.original || "", chinese: msg.chinese || "", volatile: !!msg.volatile,
+                     prevChinese: msg.prevChinese || "" };
         render();
       } else if (msg.type === "status") {
         active.appWarning = msg.warning || null;
@@ -182,7 +187,7 @@
 
     active = { video, proc, port: null, connected: false, tainted: false, appWarning: null };
     active.port = connectPort();
-    subtitle = { original: "", chinese: "", volatile: false };
+    subtitle = { original: "", chinese: "", volatile: false, prevChinese: "" };
     updateWarning();
     requestAnimationFrame(positionLoop);
     refreshButtons();

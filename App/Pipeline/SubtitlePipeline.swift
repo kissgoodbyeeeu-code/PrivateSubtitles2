@@ -12,8 +12,21 @@ final class SubtitlePipeline {
         var language: SourceLanguage
         var createdAt = Date()
         var chinese: String = ""
+        /// 边说边翻时的草稿译文，正式译文出来前先显示它
+        var draft: String = ""
         var isTranslating = false
         var error: String?
+
+        var displayChinese: String { chinese.isEmpty ? draft : chinese }
+    }
+
+    /// 字幕当前要显示的内容：当前一句 + 上一句
+    struct Snapshot: Equatable {
+        var original = ""
+        var chinese = ""
+        var isVolatile = false
+        var previousOriginal = ""
+        var previousChinese = ""
     }
 
     private(set) var lines: [Line] = []
@@ -54,22 +67,34 @@ final class SubtitlePipeline {
 
     var latestLine: Line? { lines.last }
 
-    /// 字幕变化时回调（原文, 中文, 原文是否未定稿），给画中画用
-    @ObservationIgnored var onSubtitleChange: ((String, String, Bool) -> Void)?
+    /// 字幕变化时回调，给画中画用
+    @ObservationIgnored var onSubtitleChange: ((Snapshot) -> Void)?
     /// 电平 / 提醒变化时回调（电平 0...1, 悬浮窗提醒），给画中画用
     @ObservationIgnored var onStatusChange: ((Float, String?) -> Void)?
 
     private func notifySubtitleChange() {
-        let original: String, chinese: String, isVolatile: Bool
+        var snap = Snapshot()
+        let previous: Line?
         if !volatileText.isEmpty {
-            // 正在说新的一句：显示新原文，中文先保留上一句的译文
-            (original, chinese, isVolatile) = (volatileText, latestLine?.chinese ?? "", true)
+            // 正在说新的一句：当前显示正在说的原文 + 草稿译文，上一句留着
+            snap.original = volatileText
+            snap.chinese = draftChinese
+            snap.isVolatile = true
+            previous = latestLine
+        } else if let latest = latestLine {
+            snap.original = latest.original
+            snap.chinese = latest.displayChinese
+            previous = lines.dropLast().last
         } else {
-            (original, chinese, isVolatile) = (latestLine?.original ?? "", latestLine?.chinese ?? "", false)
+            previous = nil
         }
-        onSubtitleChange?(original, chinese, isVolatile)
+        snap.previousOriginal = previous?.original ?? ""
+        snap.previousChinese = previous?.displayChinese ?? ""
+        onSubtitleChange?(snap)
         if activeSource == .safari {
-            safariServer.send(["type": "sub", "original": original, "chinese": chinese, "volatile": isVolatile])
+            safariServer.send(["type": "sub",
+                               "original": snap.original, "chinese": snap.chinese, "volatile": snap.isVolatile,
+                               "prevOriginal": snap.previousOriginal, "prevChinese": snap.previousChinese])
         }
     }
 
@@ -217,6 +242,7 @@ final class SubtitlePipeline {
         volatileText = ""
         committedText = ""
         lastVolatileAt = nil
+        resetDraft()
         status = "已停止"
         log("管线已停止")
     }
@@ -335,6 +361,7 @@ final class SubtitlePipeline {
                 rest = Self.remainder(of: text, after: committedText)
             }
             volatileText = rest
+            startDraftIfNeeded()
         }
         notifySubtitleChange()
     }
@@ -345,7 +372,9 @@ final class SubtitlePipeline {
     @ObservationIgnored private var committedText = ""
     @ObservationIgnored private var lastVolatileAt: Date?
     /// 说话停顿多久就不等识别器定稿，直接翻译
-    private let pauseCommitAfter: TimeInterval = 0.8
+    private let pauseCommitAfter: TimeInterval = 1.2
+    /// 太短的半句不单独成句（字母/汉字数），等后面的内容一起
+    private static let minSentenceLength = 10
 
     private func commitEarly(_ text: String, language: SourceLanguage) {
         let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -357,6 +386,7 @@ final class SubtitlePipeline {
     /// 由 0.2 秒的定时器调用：停顿超过阈值就把正在说的内容提前翻译
     private func commitOnPause(now: Date) {
         guard !volatileText.isEmpty, let language = currentLanguage,
+              Self.contentCount(volatileText) >= Self.minSentenceLength,
               let last = lastVolatileAt, now.timeIntervalSince(last) >= pauseCommitAfter else { return }
         commitEarly(volatileText, language: language)
         volatileText = ""
@@ -396,7 +426,7 @@ final class SubtitlePipeline {
                 let isCJKEnd = "。？！".contains(text[idx])
                 if (isCJKEnd || after.isWhitespace),
                    contentCount(text[next...]) > 0,
-                   contentCount(text[..<idx]) >= 2 {
+                   contentCount(text[..<idx]) >= minSentenceLength {
                     result = next
                 }
             }
@@ -415,6 +445,7 @@ final class SubtitlePipeline {
         volatileText = ""
         committedText = ""
         lastVolatileAt = nil
+        resetDraft()
         lastSpeechAt = now
         for text in detector.recentTexts(for: new, within: recentWindow) {
             appendLine(text, language: new)
@@ -423,10 +454,84 @@ final class SubtitlePipeline {
     }
 
     private func appendLine(_ text: String, language: SourceLanguage) {
-        let line = Line(original: text, language: language, isTranslating: true)
+        var line = Line(original: text, language: language, isTranslating: true)
+        // 草稿正好就是这句：直接用，不用再请求一次
+        let draftMatches = !draftChinese.isEmpty && draftTask == nil
+            && Self.contentCount(draftSource) == Self.contentCount(text)
+            && Self.remainder(of: text, after: draftSource).isEmpty
+        if draftMatches {
+            line.chinese = draftChinese
+            line.isTranslating = false
+        } else {
+            line.draft = draftChinese
+        }
+        resetDraft()
         lines.append(line)
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
-        translate(lineID: line.id)
+        if !draftMatches { translate(lineID: line.id) }
+    }
+
+    // MARK: - 边说边翻（草稿）
+
+    /// 正在说的那句的草稿译文
+    @ObservationIgnored private var draftChinese = ""
+    /// draftChinese 对应的原文
+    @ObservationIgnored private var draftSource = ""
+    @ObservationIgnored private var draftTask: Task<Void, Never>?
+    @ObservationIgnored private var draftGeneration = 0
+    @ObservationIgnored private var lastDraftStart = Date.distantPast
+
+    static let liveDraftKey = "liveDraftTranslation"
+    private var liveDraftEnabled: Bool {
+        UserDefaults.standard.object(forKey: Self.liveDraftKey) as? Bool ?? true
+    }
+
+    private func resetDraft() {
+        draftTask?.cancel()
+        draftTask = nil
+        draftGeneration += 1
+        draftChinese = ""
+        draftSource = ""
+    }
+
+    /// 话还没说完就先翻一版，字幕几乎和声音同时出来；说完后再用正式译文替换
+    private func startDraftIfNeeded() {
+        guard liveDraftEnabled, draftTask == nil, let language = currentLanguage else { return }
+        let text = volatileText
+        guard Self.contentCount(text) >= 6,
+              Self.remainder(of: text, after: draftSource).count >= 2 || draftSource.isEmpty,
+              Date().timeIntervalSince(lastDraftStart) >= 0.4,
+              let translator = try? TranslationEngine.current.makeTranslator() else { return }
+        let context = lines.filter { !$0.chinese.isEmpty && $0.error == nil }
+            .suffix(contextSize)
+            .map { TranslationContext(original: $0.original, chinese: $0.chinese) }
+        lastDraftStart = Date()
+        let generation = draftGeneration
+        draftTask = Task { [weak self] in
+            var out = ""
+            do {
+                for try await piece in translator.translate(text, language: language, context: Array(context)) {
+                    out += piece
+                    guard let self, self.draftGeneration == generation else { return }
+                    // 新草稿追上旧草稿的长度再替换，避免字幕一闪一闪
+                    if out.count >= self.draftChinese.count {
+                        self.draftChinese = out
+                        self.notifySubtitleChange()
+                    }
+                }
+            } catch {
+                // 草稿失败无所谓，等正式翻译
+            }
+            guard let self, self.draftGeneration == generation else { return }
+            if !out.isEmpty {
+                self.draftChinese = out
+                self.draftSource = text
+            }
+            self.draftTask = nil
+            self.notifySubtitleChange()
+            // 期间又说了新内容：接着翻下一版
+            self.startDraftIfNeeded()
+        }
     }
 
     // MARK: - 翻译

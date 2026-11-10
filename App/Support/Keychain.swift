@@ -39,5 +39,6 @@ enum SettingsKeys {
     static let anthropicKey = "anthropicApiKey"
     static let model = "translationModel"
     static let fontSize = "subtitleFontSize"
+    static let defaultFontSize: Double = 18
     static let defaultModel = "claude-haiku-5-5"
 }

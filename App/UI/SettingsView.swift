@@ -3,7 +3,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(TranslationEngine.storageKey) private var engine: TranslationEngine = .claude
-    @AppStorage(SettingsKeys.fontSize) private var fontSize: Double = 22
+    @AppStorage(SettingsKeys.fontSize) private var fontSize: Double = SettingsKeys.defaultFontSize
+    @AppStorage(SubtitlePipeline.liveDraftKey) private var liveDraft = true
     @AppStorage(SourceLanguage.storageKey) private var sourceLanguage: SourceLanguage = .auto
 
     /// 每个引擎各自的 Key 和模型，切换引擎时不会互相覆盖
@@ -65,8 +66,16 @@ struct SettingsView: View {
                     Text("自动检测会同时识别英、日、韩、西四种语言，挑最像的那种，比较耗电发热；固定一种语言更省电、更准。改了之后要重新开始同传才生效。每种语言第一次使用要下载语音模型。")
                 }
 
+                Section {
+                    Toggle("边说边翻", isOn: $liveDraft)
+                } header: {
+                    Text("翻译速度")
+                } footer: {
+                    Text("话还没说完就先翻一版，字幕几乎和声音同时出来，说完再换成正式译文。更快，但翻译请求多 2–3 倍，费用相应增加。")
+                }
+
                 Section("字幕字号：\(Int(fontSize))") {
-                    Slider(value: $fontSize, in: 14...40, step: 1)
+                    Slider(value: $fontSize, in: 12...40, step: 1)
                 }
 
                 Section("关于") {

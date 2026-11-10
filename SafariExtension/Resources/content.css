@@ -33,6 +33,12 @@
   padding: 4px 10px;
   box-sizing: border-box;
 }
+.ps-sub .ps-prev {
+  color: rgba(255, 216, 51, 0.5);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+}
 .ps-sub .ps-orig {
   color: rgba(255, 255, 255, 0.85);
   font-size: 13px;

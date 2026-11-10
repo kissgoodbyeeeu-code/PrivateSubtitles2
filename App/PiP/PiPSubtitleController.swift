@@ -72,11 +72,12 @@ final class PiPSubtitleController: NSObject {
         }
     }
 
-    func update(english: String, chinese: String, isVolatile: Bool) {
+    func update(_ snap: SubtitlePipeline.Snapshot) {
         var new = content
-        new.english = english
-        new.chinese = chinese
-        new.isVolatile = isVolatile
+        new.english = snap.original
+        new.chinese = snap.chinese
+        new.isVolatile = snap.isVolatile
+        new.previousChinese = snap.previousChinese
         guard new != content else { return }
         content = new
         enqueueFrame()
@@ -94,7 +95,7 @@ final class PiPSubtitleController: NSObject {
     // MARK: - 渲染
 
     private func enqueueFrame() {
-        let fontSize = UserDefaults.standard.object(forKey: SettingsKeys.fontSize) as? Double ?? 22
+        let fontSize = UserDefaults.standard.object(forKey: SettingsKeys.fontSize) as? Double ?? SettingsKeys.defaultFontSize
         let scale = CGFloat(fontSize / 22)
         guard let pixelBuffer = renderer.render(content, scale: scale),
               let sample = Self.makeSampleBuffer(pixelBuffer) else { return }
